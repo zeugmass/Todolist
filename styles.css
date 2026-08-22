@@ -185,10 +185,15 @@ input:focus { border-color: var(--accent); }
 .list-row .name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .list-row .count { color: var(--muted); font-size: 14px; }
 .drawer-actions { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-top: 1px solid var(--border); }
-.drawer-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 14px 0; font-size: 14px; border-top: 1px solid var(--border); margin-top: 4px; }
-.drawer-foot .muted { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.drawer-foot-btns { display: flex; gap: 6px; flex: 0 0 auto; }
-.drawer-foot-btns .link-btn { font-size: 14px; padding: 6px; }
+.drawer-foot { padding: 12px 14px 2px; border-top: 1px solid var(--border); margin-top: 4px; }
+.drawer-foot .muted { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; margin-bottom: 10px; }
+.foot-buttons { display: flex; gap: 12px; }
+.foot-btn {
+  flex: 1; min-width: 0; padding: 12px 8px; border-radius: 12px; text-align: center;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text); font-weight: 600; font-size: 15px;
+}
+.foot-btn:active { background: var(--surface-2); }
+.foot-btn.danger { color: var(--danger); border-color: var(--danger); }
 
 /* Pop menü */
 .popmenu {
