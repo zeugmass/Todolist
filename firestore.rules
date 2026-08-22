@@ -1,0 +1,56 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+
+    // Kullanıcının kendi verisi (üyelik işaretçileri dahil)
+    match /users/{uid}/{document=**} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+
+    // Davet kodları: code -> listId
+    match /invites/{code} {
+      allow read:   if signedIn();
+      allow create: if signedIn();
+      // Sadece listenin sahibi daveti silebilir
+      allow delete: if signedIn()
+        && get(/databases/$(database)/documents/lists/$(resource.data.listId)).data.ownerUid == request.auth.uid;
+      allow update: if false;
+    }
+
+    // Listeler
+    match /lists/{listId} {
+      function isMember() {
+        return signedIn()
+          && exists(/databases/$(database)/documents/lists/$(listId)/members/$(request.auth.uid));
+      }
+
+      allow read:   if isMember();
+      allow create: if signedIn() && request.resource.data.ownerUid == request.auth.uid;
+      allow update: if isMember();
+      allow delete: if isMember() && resource.data.ownerUid == request.auth.uid;
+
+      // Üyeler: kişi yalnızca kendini ekler/çıkarır (davet koduyla listId'yi öğrenip katılır)
+      match /members/{memberUid} {
+        function isMemberOfList() {
+          return signedIn()
+            && exists(/databases/$(database)/documents/lists/$(listId)/members/$(request.auth.uid));
+        }
+        allow read:   if isMemberOfList() || (signedIn() && memberUid == request.auth.uid);
+        allow create: if signedIn() && memberUid == request.auth.uid;
+        allow delete: if signedIn() && memberUid == request.auth.uid;
+        allow update: if false;
+      }
+
+      // Görevler: yalnızca liste üyeleri
+      match /todos/{todoId} {
+        function isMemberOfList() {
+          return signedIn()
+            && exists(/databases/$(database)/documents/lists/$(listId)/members/$(request.auth.uid));
+        }
+        allow read, write: if isMemberOfList();
+      }
+    }
+  }
+}

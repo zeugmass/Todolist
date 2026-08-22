@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no" />
+  <title>Görevler</title>
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#111111" media="(prefers-color-scheme: dark)" />
+
+  <!-- PWA / iOS -->
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+  <link rel="icon" href="favicon-32.png" sizes="32x32" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="Görevler" />
+
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Yükleniyor -->
+    <div id="screen-loading" class="screen">
+      <div class="spinner"></div>
+    </div>
+
+    <!-- Giriş / Üye ol -->
+    <section id="screen-auth" class="screen hidden">
+      <div class="auth-box">
+        <div class="brand">
+          <span class="brand-mark">✓</span>
+          <h1>Görevler</h1>
+        </div>
+        <p class="auth-sub" id="auth-sub">Devam etmek için giriş yap</p>
+        <form id="auth-form" autocomplete="on">
+          <input id="auth-email" type="email" inputmode="email" autocomplete="email" placeholder="E-posta" required />
+          <input id="auth-password" type="password" autocomplete="current-password" placeholder="Şifre (en az 6 karakter)" required minlength="6" />
+          <button id="auth-submit" type="submit" class="btn-primary">Giriş yap</button>
+        </form>
+        <div id="auth-error" class="auth-error hidden"></div>
+        <button id="auth-toggle" class="link-btn">Hesabın yok mu? Üye ol</button>
+      </div>
+    </section>
+
+    <!-- Ana ekran -->
+    <section id="screen-main" class="screen hidden">
+      <header class="topbar">
+        <button id="btn-lists" class="icon-btn" aria-label="Listeler" title="Listeler">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path d="M4 6h16M4 12h16M4 18h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
+        <h2 id="list-title" class="list-title" title="Başlığı düzenlemek için dokun">Görevler</h2>
+        <button id="btn-menu" class="icon-btn" aria-label="Menü" title="Menü">
+          <svg viewBox="0 0 24 24" width="22" height="22"><circle cx="12" cy="5" r="1.7" fill="currentColor"/><circle cx="12" cy="12" r="1.7" fill="currentColor"/><circle cx="12" cy="19" r="1.7" fill="currentColor"/></svg>
+        </button>
+      </header>
+
+      <form id="add-form" class="add-bar">
+        <input id="add-input" type="text" placeholder="Yeni görev ekle…" autocomplete="off" enterkeyhint="done" />
+        <button type="submit" class="add-btn" aria-label="Ekle">
+          <svg viewBox="0 0 24 24" width="24" height="24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+        </button>
+      </form>
+
+      <main id="todo-scroll" class="todo-scroll">
+        <ul id="todo-list" class="todo-list"></ul>
+        <div id="empty-state" class="empty-state hidden">
+          <p>Henüz görev yok.</p>
+          <p class="muted">Yukarıdan ilk görevini ekle.</p>
+        </div>
+        <div id="no-list-state" class="empty-state hidden">
+          <p>Hiç listen yok.</p>
+          <p class="muted">Soldaki menüden yeni liste oluştur ya da bir listeye katıl.</p>
+        </div>
+      </main>
+    </section>
+  </div>
+
+  <!-- Listeler çekmecesi -->
+  <div id="drawer-overlay" class="overlay hidden"></div>
+  <aside id="drawer" class="drawer">
+    <div class="drawer-head">
+      <span>Listelerim</span>
+      <button id="drawer-close" class="icon-btn" aria-label="Kapat">
+        <svg viewBox="0 0 24 24" width="20" height="20"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <ul id="lists-ul" class="lists-ul"></ul>
+    <div class="drawer-actions">
+      <button id="btn-new-list" class="btn-secondary">+ Yeni liste</button>
+      <button id="btn-join-list" class="btn-secondary">Listeye katıl (kod)</button>
+    </div>
+    <div class="drawer-foot">
+      <span id="user-email" class="muted"></span>
+      <button id="btn-signout" class="link-btn danger">Çıkış yap</button>
+    </div>
+  </aside>
+
+  <!-- Liste menüsü (sağ üst) -->
+  <div id="menu-overlay" class="overlay hidden"></div>
+  <div id="list-menu" class="popmenu hidden">
+    <button id="mi-rename" class="popmenu-item">Başlığı değiştir</button>
+    <button id="mi-invite" class="popmenu-item">Davet kodunu göster</button>
+    <button id="mi-clear-done" class="popmenu-item">Tamamlananları temizle</button>
+    <button id="mi-leave" class="popmenu-item danger">Listeden ayrıl / sil</button>
+  </div>
+
+  <!-- Basit modal (rename, invite, join, confirm) -->
+  <div id="modal-overlay" class="overlay hidden">
+    <div id="modal" class="modal" role="dialog" aria-modal="true">
+      <h3 id="modal-title"></h3>
+      <div id="modal-body"></div>
+      <div id="modal-actions" class="modal-actions"></div>
+    </div>
+  </div>
+
+  <!-- Geri al bildirimi -->
+  <div id="snackbar" class="snackbar hidden">
+    <span id="snackbar-text"></span>
+    <button id="snackbar-action" class="snackbar-btn">Geri al</button>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.6/Sortable.min.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
