@@ -74,6 +74,7 @@ button { font-family: inherit; font-size: inherit; cursor: pointer; border: none
   width: 40px; height: 40px; border-radius: 10px; color: var(--text);
 }
 .icon-btn:active { background: var(--surface-2); }
+#btn-refresh.spinning svg { animation: spin 0.7s linear; }
 
 /* Auth */
 #screen-auth { align-items: center; justify-content: center; padding: 24px; }

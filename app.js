@@ -165,7 +165,6 @@ async function createPersonalSpace() {
 function switchToSpace(newSpaceId) {
   if (!newSpaceId || newSpaceId === spaceId) return; // aynı alansa tekrar kurma
   dbg("alan değişiyor → " + newSpaceId.slice(0, 6));
-  // eski alanın aboneliklerini kapat
   if (spaceDocUnsub) { spaceDocUnsub(); spaceDocUnsub = null; }
   if (membersUnsub) { membersUnsub(); membersUnsub = null; }
   if (listsUnsub) { listsUnsub(); listsUnsub = null; }
@@ -176,18 +175,24 @@ function switchToSpace(newSpaceId) {
 
   spaceId = newSpaceId;
   activeListId = localStorage.getItem("active:" + spaceId) || null;
+  establishSpaceListeners();
+}
 
-  // alan belgesi (davet kodu vb.)
-  spaceDocUnsub = onSnapshot(doc(db, "spaces", spaceId), (d) => {
-    spaceData = d.exists() ? d.data() : null;
-  }, () => {});
+// Alan seviyesindeki dinleyicileri (yeniden) kurar. Hata olursa kendini onarır.
+function establishSpaceListeners() {
+  if (!spaceId) return;
+  if (spaceDocUnsub) { spaceDocUnsub(); spaceDocUnsub = null; }
+  if (membersUnsub) { membersUnsub(); membersUnsub = null; }
+  if (listsUnsub) { listsUnsub(); listsUnsub = null; }
 
-  // üyeler (kaç kişi bağlı → "Bağlantıyı kes" görünürlüğü)
-  membersUnsub = onSnapshot(collection(db, "spaces", spaceId, "members"), (snap) => {
-    setConnStatus(snap.size);
-  }, () => {});
+  spaceDocUnsub = onSnapshot(doc(db, "spaces", spaceId),
+    (d) => { spaceData = d.exists() ? d.data() : null; },
+    (e) => scheduleResync("alan " + (e.code || "")));
 
-  // listeler (anlık)
+  membersUnsub = onSnapshot(collection(db, "spaces", spaceId, "members"),
+    (snap) => setConnStatus(snap.size),
+    (e) => scheduleResync("üyeler " + (e.code || "")));
+
   const tSub = performance.now();
   let firstLists = true;
   const q = query(collection(db, "spaces", spaceId, "lists"), orderBy("createdAt"));
@@ -207,7 +212,23 @@ function switchToSpace(newSpaceId) {
     }
     renderLists();
     updateEmptyStates();
-  }, () => {});
+  }, (e) => scheduleResync("listeler " + (e.code || "")));
+}
+
+// Hata sonrası otomatik yeniden bağlanma (sessiz ölmeyi engeller)
+let resyncTimer = null;
+function scheduleResync(reason) {
+  dbg("otomatik yeniden bağlanma: " + reason);
+  clearTimeout(resyncTimer);
+  resyncTimer = setTimeout(() => { if (spaceId) { establishSpaceListeners(); subscribeTodos(activeListId); } }, 1500);
+}
+
+// Elle yenile (header'daki buton)
+function manualResync() {
+  dbg("elle yenile");
+  if (spaceId) { establishSpaceListeners(); subscribeTodos(activeListId); }
+  else if (currentUser) { startUserDoc(); }
+  toast("Yenilendi");
 }
 
 function setActiveList(listId) {
@@ -277,7 +298,7 @@ function subscribeTodos(listId) {
     snap.forEach((d) => currentTodos.push({ id: d.id, ...d.data() }));
     renderTodos();
     updateEmptyStates();
-  }, () => {});
+  }, (e) => scheduleResync("görevler " + (e.code || "")));
 }
 
 function renderTodos() {
@@ -404,6 +425,12 @@ function openMenu() { show($("menu-overlay")); show($("list-menu")); }
 function closeMenu() { hide($("menu-overlay")); hide($("list-menu")); }
 $("btn-menu").addEventListener("click", () => { if (activeListId) openMenu(); });
 $("menu-overlay").addEventListener("click", closeMenu);
+$("btn-refresh").addEventListener("click", () => {
+  const b = $("btn-refresh");
+  b.classList.add("spinning");
+  manualResync();
+  setTimeout(() => b.classList.remove("spinning"), 700);
+});
 
 function openModal({ title, bodyHTML, okText = "Tamam", okDanger = false, onOk, showCancel = true }) {
   $("modal-title").textContent = title;
@@ -456,7 +483,9 @@ $("btn-new-list").addEventListener("click", () => {
       const ref = await addDoc(collection(db, "spaces", spaceId, "lists"),
         { title: name, createdAt: serverTimestamp(), createdBy: currentUser.uid }).catch(() => null);
       if (!ref) { modalError("Oluşturulamadı. İnternetini kontrol et."); return false; }
+      lists.set(ref.id, { id: ref.id, title: name, createdBy: currentUser.uid }); // anlık göster
       setActiveList(ref.id);
+      renderLists(); updateEmptyStates();
     }
   });
 });
