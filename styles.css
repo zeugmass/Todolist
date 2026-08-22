@@ -187,6 +187,8 @@ input:focus { border-color: var(--accent); }
 .drawer-actions { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-top: 1px solid var(--border); }
 .drawer-foot { padding: 12px 14px 2px; border-top: 1px solid var(--border); margin-top: 4px; }
 .drawer-foot .muted { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; margin-bottom: 10px; }
+.conn-status { font-size: 13px; color: var(--muted); margin-bottom: 10px; }
+.conn-status.linked { color: var(--text); font-weight: 600; }
 .foot-buttons { display: flex; gap: 12px; }
 .foot-btn {
   flex: 1; min-width: 0; padding: 12px 8px; border-radius: 12px; text-align: center;

@@ -52,6 +52,7 @@ let creatingSpace = false;
 let spaceId = null;          // aktif ortak alan
 let spaceData = null;        // { ownerUid, inviteCode }
 let spaceDocUnsub = null;
+let membersUnsub = null;
 let listsUnsub = null;
 const lists = new Map();     // listId -> { title, createdAt, ... }
 let activeListId = null;
@@ -166,10 +167,12 @@ function switchToSpace(newSpaceId) {
   dbg("alan değişiyor → " + newSpaceId.slice(0, 6));
   // eski alanın aboneliklerini kapat
   if (spaceDocUnsub) { spaceDocUnsub(); spaceDocUnsub = null; }
+  if (membersUnsub) { membersUnsub(); membersUnsub = null; }
   if (listsUnsub) { listsUnsub(); listsUnsub = null; }
   if (todosUnsub) { todosUnsub(); todosUnsub = null; }
   lists.clear(); currentTodos = []; spaceData = null;
   $("todo-list").innerHTML = ""; $("lists-ul").innerHTML = "";
+  setConnStatus(1); // yeni alan varsayılan: yalnız
 
   spaceId = newSpaceId;
   activeListId = localStorage.getItem("active:" + spaceId) || null;
@@ -177,6 +180,11 @@ function switchToSpace(newSpaceId) {
   // alan belgesi (davet kodu vb.)
   spaceDocUnsub = onSnapshot(doc(db, "spaces", spaceId), (d) => {
     spaceData = d.exists() ? d.data() : null;
+  }, () => {});
+
+  // üyeler (kaç kişi bağlı → "Bağlantıyı kes" görünürlüğü)
+  membersUnsub = onSnapshot(collection(db, "spaces", spaceId, "members"), (snap) => {
+    setConnStatus(snap.size);
   }, () => {});
 
   // listeler (anlık)
@@ -216,6 +224,15 @@ function setActiveList(listId) {
 function renderHeader() {
   const l = activeListId ? lists.get(activeListId) : null;
   $("list-title").textContent = l ? l.title : "Görevler";
+}
+
+// Bağlantı durumu: 1 kişi = yalnız (buton gizli), 2+ = eşinle bağlı (buton görünür)
+function setConnStatus(count) {
+  const linked = count > 1;
+  $("btn-disconnect").classList.toggle("hidden", !linked);
+  const s = $("conn-status");
+  s.textContent = linked ? `🔗 Eşinle bağlı (${count} kişi)` : "Yalnız kullanım";
+  s.classList.toggle("linked", linked);
 }
 
 function renderLists() {
@@ -613,6 +630,7 @@ function toast(text) {
 function cleanupAll() {
   if (userDocUnsub) { userDocUnsub(); userDocUnsub = null; }
   if (spaceDocUnsub) { spaceDocUnsub(); spaceDocUnsub = null; }
+  if (membersUnsub) { membersUnsub(); membersUnsub = null; }
   if (listsUnsub) { listsUnsub(); listsUnsub = null; }
   if (todosUnsub) { todosUnsub(); todosUnsub = null; }
   if (sortable) { sortable.destroy(); sortable = null; }
