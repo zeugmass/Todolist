@@ -4,26 +4,25 @@ service cloud.firestore {
 
     function signedIn() { return request.auth != null; }
 
-    // Kullanıcının kendi verisi (üyelik işaretçileri dahil)
-    match /users/{uid}/{document=**} {
+    // Kullanıcı belgesi (hangi ortak alana ait olduğu dahil)
+    match /users/{uid} {
       allow read, write: if signedIn() && request.auth.uid == uid;
     }
 
-    // Davet kodları: code -> listId
+    // Davet kodları: code -> spaceId
     match /invites/{code} {
       allow read:   if signedIn();
       allow create: if signedIn();
-      // Sadece listenin sahibi daveti silebilir
       allow delete: if signedIn()
-        && get(/databases/$(database)/documents/lists/$(resource.data.listId)).data.ownerUid == request.auth.uid;
+        && get(/databases/$(database)/documents/spaces/$(resource.data.spaceId)).data.ownerUid == request.auth.uid;
       allow update: if false;
     }
 
-    // Listeler
-    match /lists/{listId} {
+    // Ortak alanlar (space): içindeki tüm listeler üyeler arasında paylaşılır
+    match /spaces/{spaceId} {
       function isMember() {
         return signedIn()
-          && exists(/databases/$(database)/documents/lists/$(listId)/members/$(request.auth.uid));
+          && exists(/databases/$(database)/documents/spaces/$(spaceId)/members/$(request.auth.uid));
       }
 
       allow read:   if isMember();
@@ -31,25 +30,20 @@ service cloud.firestore {
       allow update: if isMember();
       allow delete: if isMember() && resource.data.ownerUid == request.auth.uid;
 
-      // Üyeler: kişi yalnızca kendini ekler/çıkarır (davet koduyla listId'yi öğrenip katılır)
+      // Üyeler: kişi yalnızca kendini ekler/çıkarır
       match /members/{memberUid} {
-        function isMemberOfList() {
-          return signedIn()
-            && exists(/databases/$(database)/documents/lists/$(listId)/members/$(request.auth.uid));
-        }
-        allow read:   if isMemberOfList() || (signedIn() && memberUid == request.auth.uid);
+        allow read:   if isMember() || (signedIn() && memberUid == request.auth.uid);
         allow create: if signedIn() && memberUid == request.auth.uid;
         allow delete: if signedIn() && memberUid == request.auth.uid;
         allow update: if false;
       }
 
-      // Görevler: yalnızca liste üyeleri
-      match /todos/{todoId} {
-        function isMemberOfList() {
-          return signedIn()
-            && exists(/databases/$(database)/documents/lists/$(listId)/members/$(request.auth.uid));
+      // Listeler ve görevler: yalnızca alan üyeleri
+      match /lists/{listId} {
+        allow read, write: if isMember();
+        match /todos/{todoId} {
+          allow read, write: if isMember();
         }
-        allow read, write: if isMemberOfList();
       }
     }
   }

@@ -35,7 +35,12 @@
         <p class="auth-sub" id="auth-sub">Devam etmek için giriş yap</p>
         <form id="auth-form" autocomplete="on">
           <input id="auth-email" type="email" inputmode="email" autocomplete="email" placeholder="E-posta" required />
-          <input id="auth-password" type="password" autocomplete="current-password" placeholder="Şifre (en az 6 karakter)" required minlength="6" />
+          <div class="pw-wrap">
+            <input id="auth-password" type="password" autocomplete="current-password" placeholder="Şifre (en az 6 karakter)" required minlength="6" />
+            <button type="button" id="pw-toggle" class="pw-toggle" aria-label="Şifreyi göster">
+              <svg id="pw-eye" viewBox="0 0 24 24" width="22" height="22"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
+            </button>
+          </div>
           <button id="auth-submit" type="submit" class="btn-primary">Giriş yap</button>
         </form>
         <div id="auth-error" class="auth-error hidden"></div>
@@ -70,7 +75,7 @@
         </div>
         <div id="no-list-state" class="empty-state hidden">
           <p>Hiç listen yok.</p>
-          <p class="muted">Soldaki menüden yeni liste oluştur ya da bir listeye katıl.</p>
+          <p class="muted">Menüden yeni liste oluştur ya da eşinin koduyla katıl.</p>
         </div>
       </main>
     </section>
@@ -88,11 +93,15 @@
     <ul id="lists-ul" class="lists-ul"></ul>
     <div class="drawer-actions">
       <button id="btn-new-list" class="btn-secondary">+ Yeni liste</button>
-      <button id="btn-join-list" class="btn-secondary">Listeye katıl (kod)</button>
+      <button id="btn-invite" class="btn-secondary">Eşini davet et (kod göster)</button>
+      <button id="btn-join-list" class="btn-secondary">Listeye katıl (kod gir)</button>
     </div>
     <div class="drawer-foot">
       <span id="user-email" class="muted"></span>
-      <button id="btn-signout" class="link-btn danger">Çıkış yap</button>
+      <div class="drawer-foot-btns">
+        <button id="btn-disconnect" class="link-btn">Bağlantıyı kes</button>
+        <button id="btn-signout" class="link-btn danger">Çıkış</button>
+      </div>
     </div>
   </aside>
 
@@ -100,12 +109,11 @@
   <div id="menu-overlay" class="overlay hidden"></div>
   <div id="list-menu" class="popmenu hidden">
     <button id="mi-rename" class="popmenu-item">Başlığı değiştir</button>
-    <button id="mi-invite" class="popmenu-item">Davet kodunu göster</button>
     <button id="mi-clear-done" class="popmenu-item">Tamamlananları temizle</button>
-    <button id="mi-leave" class="popmenu-item danger">Listeden ayrıl / sil</button>
+    <button id="mi-delete-list" class="popmenu-item danger">Listeyi sil</button>
   </div>
 
-  <!-- Basit modal (rename, invite, join, confirm) -->
+  <!-- Basit modal -->
   <div id="modal-overlay" class="overlay hidden">
     <div id="modal" class="modal" role="dialog" aria-modal="true">
       <h3 id="modal-title"></h3>

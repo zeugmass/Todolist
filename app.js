@@ -10,7 +10,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig } from "./firebase-config.js";
 
-/* ---------- Firebase kurulum ---------- */
+/* ---------- Firebase ---------- */
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = initializeFirestore(app, {
@@ -18,26 +18,40 @@ const db = initializeFirestore(app, {
 });
 setPersistence(auth, browserLocalPersistence).catch(() => {});
 
-/* ---------- Kısa yardımcılar ---------- */
+/* ---------- Yardımcılar ---------- */
 const $ = (id) => document.getElementById(id);
 const show = (el) => el.classList.remove("hidden");
 const hide = (el) => el.classList.add("hidden");
 
 /* ---------- Durum ---------- */
 let currentUser = null;
-let activeListId = localStorage.getItem("activeListId") || null;
+let userDocUnsub = null;
+let creatingSpace = false;
 
-let membershipUnsub = null;
-const listDocUnsubs = new Map();   // listId -> unsub
-const listData = new Map();        // listId -> { title, ownerUid, inviteCode }
+let spaceId = null;          // aktif ortak alan
+let spaceData = null;        // { ownerUid, inviteCode }
+let spaceDocUnsub = null;
+let listsUnsub = null;
+const lists = new Map();     // listId -> { title, createdAt, ... }
+let activeListId = null;
+
 let todosUnsub = null;
-let currentTodos = [];             // aktif listedeki görevler
+let currentTodos = [];
 let sortable = null;
+let undoTimer = null;
 
 /* ================================================================
-   KİMLİK DOĞRULAMA (Giriş / Üye ol)
+   KİMLİK DOĞRULAMA
 ================================================================ */
-let authMode = "login"; // "login" | "signup"
+let authMode = "login";
+
+$("pw-toggle").addEventListener("click", () => {
+  const input = $("auth-password");
+  const on = input.type === "password";
+  input.type = on ? "text" : "password";
+  $("pw-toggle").classList.toggle("on", on);
+  $("pw-toggle").setAttribute("aria-label", on ? "Şifreyi gizle" : "Şifreyi göster");
+});
 
 $("auth-toggle").addEventListener("click", () => {
   authMode = authMode === "login" ? "signup" : "login";
@@ -56,11 +70,8 @@ $("auth-form").addEventListener("submit", async (e) => {
   hide($("auth-error"));
   $("auth-submit").disabled = true;
   try {
-    if (authMode === "signup") {
-      await createUserWithEmailAndPassword(auth, email, pass);
-    } else {
-      await signInWithEmailAndPassword(auth, email, pass);
-    }
+    if (authMode === "signup") await createUserWithEmailAndPassword(auth, email, pass);
+    else await signInWithEmailAndPassword(auth, email, pass);
   } catch (err) {
     $("auth-error").textContent = authErrorTR(err.code);
     show($("auth-error"));
@@ -90,7 +101,7 @@ onAuthStateChanged(auth, (user) => {
     $("user-email").textContent = user.email || "";
     hide($("screen-loading")); hide($("screen-auth"));
     show($("screen-main"));
-    startMemberships();
+    startUserDoc();
   } else {
     cleanupAll();
     hide($("screen-loading")); hide($("screen-main"));
@@ -98,116 +109,126 @@ onAuthStateChanged(auth, (user) => {
   }
 });
 
-$("btn-signout").addEventListener("click", async () => {
-  closeDrawer();
-  await signOut(auth);
-});
+$("btn-signout").addEventListener("click", async () => { closeDrawer(); await signOut(auth); });
 
 /* ================================================================
-   LİSTELER (üyelikler → liste belgeleri)
+   KULLANICI BELGESİ → ORTAK ALAN (space)
+   Her kullanıcı bir "space"e aittir. Aynı space'teki herkes
+   tüm listeleri anlık görür.
 ================================================================ */
-function startMemberships() {
-  if (membershipUnsub) return;
-  const ref = collection(db, "users", currentUser.uid, "memberships");
-  membershipUnsub = onSnapshot(ref, (snap) => {
-    const ids = new Set();
-    snap.forEach((d) => ids.add(d.id));
-
-    // yeni üyelikler → liste belgesine abone ol
-    ids.forEach((id) => {
-      if (!listDocUnsubs.has(id)) subscribeListDoc(id);
-    });
-    // kaldırılan üyelikler → aboneliği bırak
-    for (const id of [...listDocUnsubs.keys()]) {
-      if (!ids.has(id)) {
-        listDocUnsubs.get(id)();
-        listDocUnsubs.delete(id);
-        listData.delete(id);
-      }
+function startUserDoc() {
+  if (userDocUnsub) return;
+  userDocUnsub = onSnapshot(doc(db, "users", currentUser.uid), async (snap) => {
+    const data = snap.data();
+    if (!data || !data.spaceId) {
+      if (!creatingSpace) { creatingSpace = true; await createPersonalSpace().catch(() => {}); creatingSpace = false; }
+      return;
     }
-    // aktif liste hâlâ geçerli mi?
-    if (ids.size === 0) {
-      setActiveList(null);
-    } else if (!activeListId || !ids.has(activeListId)) {
-      setActiveList([...ids][0]);
-    }
-    renderLists();
-    updateMainEmptyStates();
-  });
+    if (data.spaceId !== spaceId) switchToSpace(data.spaceId);
+  }, () => {});
 }
 
-function subscribeListDoc(listId) {
-  const unsub = onSnapshot(
-    doc(db, "lists", listId),
-    (d) => {
-      if (!d.exists()) {
-        // Liste silinmiş → bayat üyelik işaretçisini temizle (kendi kendini onarır)
-        deleteDoc(doc(db, "users", currentUser.uid, "memberships", listId)).catch(() => {});
-        return;
-      }
-      listData.set(listId, d.data());
-      renderLists();
-      if (listId === activeListId) renderHeader();
-    },
-    () => { /* izin/ağ hatası: sessiz geç */ }
-  );
-  listDocUnsubs.set(listId, unsub);
+async function createPersonalSpace() {
+  const spaceRef = doc(collection(db, "spaces"));
+  const sid = spaceRef.id;
+  const code = genCode();
+  const batch = writeBatch(db);
+  batch.set(spaceRef, { ownerUid: currentUser.uid, inviteCode: code, createdAt: serverTimestamp() });
+  batch.set(doc(db, "spaces", sid, "members", currentUser.uid), { email: currentUser.email || "", joinedAt: serverTimestamp() });
+  batch.set(doc(db, "invites", code), { spaceId: sid, createdAt: serverTimestamp() });
+  batch.set(doc(db, "users", currentUser.uid), { spaceId: sid, email: currentUser.email || "" });
+  await batch.commit();
+}
+
+function switchToSpace(newSpaceId) {
+  // eski alanın aboneliklerini kapat
+  if (spaceDocUnsub) { spaceDocUnsub(); spaceDocUnsub = null; }
+  if (listsUnsub) { listsUnsub(); listsUnsub = null; }
+  if (todosUnsub) { todosUnsub(); todosUnsub = null; }
+  lists.clear(); currentTodos = []; spaceData = null;
+  $("todo-list").innerHTML = ""; $("lists-ul").innerHTML = "";
+
+  spaceId = newSpaceId;
+  activeListId = localStorage.getItem("active:" + spaceId) || null;
+
+  // alan belgesi (davet kodu vb.)
+  spaceDocUnsub = onSnapshot(doc(db, "spaces", spaceId), (d) => {
+    spaceData = d.exists() ? d.data() : null;
+  }, () => {});
+
+  // listeler (anlık)
+  const q = query(collection(db, "spaces", spaceId, "lists"), orderBy("createdAt"));
+  listsUnsub = onSnapshot(q, (snap) => {
+    lists.clear();
+    snap.forEach((d) => lists.set(d.id, { id: d.id, ...d.data() }));
+
+    if (lists.size === 0) {
+      setActiveList(null);
+    } else if (!activeListId || !lists.has(activeListId)) {
+      setActiveList([...lists.keys()][0]);
+    } else {
+      renderHeader();
+      if (!todosUnsub) subscribeTodos(activeListId);
+    }
+    renderLists();
+    updateEmptyStates();
+  }, () => {});
 }
 
 function setActiveList(listId) {
-  if (activeListId === listId) { if (listId) subscribeTodos(listId); return; }
+  const changed = activeListId !== listId;
   activeListId = listId;
-  if (listId) localStorage.setItem("activeListId", listId);
-  else localStorage.removeItem("activeListId");
+  if (listId) localStorage.setItem("active:" + spaceId, listId);
+  else localStorage.removeItem("active:" + spaceId);
   renderHeader();
   renderLists();
-  subscribeTodos(listId);
-  updateMainEmptyStates();
+  if (changed || !todosUnsub) subscribeTodos(listId);
+  updateEmptyStates();
 }
 
 function renderHeader() {
-  const data = activeListId ? listData.get(activeListId) : null;
-  $("list-title").textContent = data ? data.title : "Görevler";
+  const l = activeListId ? lists.get(activeListId) : null;
+  $("list-title").textContent = l ? l.title : "Görevler";
 }
 
 function renderLists() {
   const ul = $("lists-ul");
   ul.innerHTML = "";
-  const ids = [...listData.keys()].sort((a, b) =>
-    (listData.get(a).title || "").localeCompare(listData.get(b).title || "", "tr"));
-  ids.forEach((id) => {
+  [...lists.values()].forEach((l) => {
     const li = document.createElement("li");
-    li.className = "list-row" + (id === activeListId ? " active" : "");
+    li.className = "list-row" + (l.id === activeListId ? " active" : "");
     const name = document.createElement("span");
     name.className = "name";
-    name.textContent = listData.get(id).title || "(başlıksız)";
+    name.textContent = l.title || "(başlıksız)";
     li.appendChild(name);
-    li.addEventListener("click", () => { setActiveList(id); closeDrawer(); });
+    li.addEventListener("click", () => { setActiveList(l.id); closeDrawer(); });
     ul.appendChild(li);
   });
 }
 
-function updateMainEmptyStates() {
-  const hasList = listData.size > 0;
+function updateEmptyStates() {
+  const hasList = lists.size > 0;
   $("no-list-state").classList.toggle("hidden", hasList);
   $("add-form").classList.toggle("hidden", !hasList);
-  if (!hasList) hide($("empty-state"));
+  const noTodos = hasList && !!activeListId && currentTodos.length === 0;
+  $("empty-state").classList.toggle("hidden", !noTodos);
 }
 
 /* ================================================================
-   GÖREVLER (aktif liste)
+   GÖREVLER
 ================================================================ */
 function subscribeTodos(listId) {
   if (todosUnsub) { todosUnsub(); todosUnsub = null; }
   currentTodos = [];
   $("todo-list").innerHTML = "";
-  if (!listId) { hide($("empty-state")); return; }
+  if (!listId) { updateEmptyStates(); return; }
 
-  const q = query(collection(db, "lists", listId, "todos"), orderBy("order"));
+  const q = query(collection(db, "spaces", spaceId, "lists", listId, "todos"), orderBy("order"));
   todosUnsub = onSnapshot(q, (snap) => {
     currentTodos = [];
     snap.forEach((d) => currentTodos.push({ id: d.id, ...d.data() }));
     renderTodos();
+    updateEmptyStates();
   }, () => {});
 }
 
@@ -216,18 +237,11 @@ function renderTodos() {
   ul.innerHTML = "";
   currentTodos.forEach((t) => ul.appendChild(todoRow(t)));
 
-  const hasList = listData.size > 0;
-  $("empty-state").classList.toggle("hidden", !(hasList && currentTodos.length === 0));
-
-  // sürükle-sırala
   if (sortable) { sortable.destroy(); sortable = null; }
-  if (currentTodos.length > 1) {
+  if (currentTodos.length > 1 && typeof Sortable !== "undefined") {
     sortable = Sortable.create(ul, {
-      animation: 150,
-      delay: 200,
-      delayOnTouchOnly: true,
-      ghostClass: "sortable-ghost",
-      onEnd: onReorder
+      animation: 150, delay: 200, delayOnTouchOnly: true,
+      ghostClass: "sortable-ghost", onEnd: onReorder
     });
   }
 }
@@ -237,28 +251,23 @@ function todoRow(t) {
   li.className = "todo-item" + (t.done ? " done" : "");
   li.dataset.id = t.id;
 
-  // checkbox
   const cb = document.createElement("button");
   cb.className = "checkbox";
   cb.setAttribute("aria-label", "Tamamlandı");
-  cb.innerHTML = '<svg viewBox="0 0 24 24" width="15" height="15"><path d="M5 13l4 4L19 7" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-  cb.querySelector("path").setAttribute("stroke", "var(--accent-contrast)");
+  cb.innerHTML = '<svg viewBox="0 0 24 24" width="15" height="15"><path d="M5 13l4 4L19 7" fill="none" stroke="var(--accent-contrast)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   cb.addEventListener("click", (e) => { e.stopPropagation(); toggleTodo(t); });
 
-  // metin
   const span = document.createElement("span");
   span.className = "todo-text";
   span.textContent = t.text;
   span.addEventListener("click", () => toggleTodo(t));
 
-  // düzenle
   const edit = document.createElement("button");
   edit.className = "row-del";
   edit.setAttribute("aria-label", "Düzenle");
   edit.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18"><path d="M4 20h4L18.5 9.5a2 2 0 0 0 0-2.8l-1.2-1.2a2 2 0 0 0-2.8 0L4 16v4z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>';
   edit.addEventListener("click", (e) => { e.stopPropagation(); startEdit(li, t); });
 
-  // sil
   const del = document.createElement("button");
   del.className = "row-del";
   del.setAttribute("aria-label", "Sil");
@@ -269,20 +278,19 @@ function todoRow(t) {
   return li;
 }
 
+function todoRef(id) { return doc(db, "spaces", spaceId, "lists", activeListId, "todos", id); }
+
 async function addTodo(text) {
   if (!activeListId) return;
-  const col = collection(db, "lists", activeListId, "todos");
-  await addDoc(col, {
-    text, done: false, order: Date.now(),
-    createdAt: serverTimestamp(), createdBy: currentUser.uid
-  });
+  const col = collection(db, "spaces", spaceId, "lists", activeListId, "todos");
+  await addDoc(col, { text, done: false, order: Date.now(), createdAt: serverTimestamp(), createdBy: currentUser.uid }).catch(() => {});
   const scroll = $("todo-scroll");
   requestAnimationFrame(() => { scroll.scrollTop = scroll.scrollHeight; });
 }
 
 function toggleTodo(t) {
   if (navigator.vibrate) navigator.vibrate(8);
-  updateDoc(doc(db, "lists", activeListId, "todos", t.id), { done: !t.done }).catch(() => {});
+  updateDoc(todoRef(t.id), { done: !t.done }).catch(() => {});
 }
 
 function startEdit(li, t) {
@@ -299,11 +307,8 @@ function startEdit(li, t) {
   const save = async () => {
     if (finished) return; finished = true;
     const val = input.value.trim();
-    if (val && val !== t.text) {
-      await updateDoc(doc(db, "lists", activeListId, "todos", t.id), { text: val }).catch(() => {});
-    } else {
-      renderTodos();
-    }
+    if (val && val !== t.text) await updateDoc(todoRef(t.id), { text: val }).catch(() => {});
+    else renderTodos();
   };
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); save(); }
@@ -312,14 +317,12 @@ function startEdit(li, t) {
   input.addEventListener("blur", save);
 }
 
-/* silme + geri al */
-let undoTimer = null;
 function deleteTodo(t) {
   const data = { text: t.text, done: !!t.done, order: t.order, createdAt: t.createdAt || serverTimestamp(), createdBy: t.createdBy || currentUser.uid };
-  const id = t.id, listId = activeListId;
-  deleteDoc(doc(db, "lists", listId, "todos", id)).catch(() => {});
+  const id = t.id, sid = spaceId, lid = activeListId;
+  deleteDoc(doc(db, "spaces", sid, "lists", lid, "todos", id)).catch(() => {});
   showSnackbar("Görev silindi", async () => {
-    await setDoc(doc(db, "lists", listId, "todos", id), data).catch(() => {});
+    await setDoc(doc(db, "spaces", sid, "lists", lid, "todos", id), data).catch(() => {});
   });
 }
 
@@ -327,11 +330,10 @@ async function onReorder() {
   const ul = $("todo-list");
   const ids = [...ul.querySelectorAll(".todo-item")].map((li) => li.dataset.id);
   const batch = writeBatch(db);
-  ids.forEach((id, i) => batch.update(doc(db, "lists", activeListId, "todos", id), { order: i }));
+  ids.forEach((id, i) => batch.update(todoRef(id), { order: i }));
   await batch.commit().catch(() => {});
 }
 
-/* ekleme formu */
 $("add-form").addEventListener("submit", (e) => {
   e.preventDefault();
   const input = $("add-input");
@@ -355,7 +357,6 @@ function closeMenu() { hide($("menu-overlay")); hide($("list-menu")); }
 $("btn-menu").addEventListener("click", () => { if (activeListId) openMenu(); });
 $("menu-overlay").addEventListener("click", closeMenu);
 
-/* Modal yardımcıları */
 function openModal({ title, bodyHTML, okText = "Tamam", okDanger = false, onOk, showCancel = true }) {
   $("modal-title").textContent = title;
   $("modal-body").innerHTML = bodyHTML || "";
@@ -369,19 +370,29 @@ function openModal({ title, bodyHTML, okText = "Tamam", okDanger = false, onOk, 
   }
   const ok = document.createElement("button");
   ok.className = "ok" + (okDanger ? " danger" : ""); ok.textContent = okText;
-  ok.addEventListener("click", async () => { const keep = await (onOk ? onOk() : null); if (keep !== false) closeModal(); });
+  ok.addEventListener("click", async () => {
+    ok.disabled = true;
+    let keep;
+    try { keep = await (onOk ? onOk(ok) : null); }
+    finally { ok.disabled = false; }
+    if (keep !== false) closeModal();
+  });
   actions.appendChild(ok);
   show($("modal-overlay"));
   const firstInput = $("modal-body").querySelector("input");
   if (firstInput) {
     setTimeout(() => firstInput.focus(), 50);
-    firstInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); ok.click(); }
-    });
+    firstInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); ok.click(); } });
   }
 }
 function closeModal() { hide($("modal-overlay")); $("modal-body").innerHTML = ""; }
 $("modal-overlay").addEventListener("click", (e) => { if (e.target === $("modal-overlay")) closeModal(); });
+
+function modalError(msg) {
+  let el = $("modal-body").querySelector(".err");
+  if (!el) { el = document.createElement("p"); el.className = "hint err"; el.style.color = "var(--danger)"; $("modal-body").appendChild(el); }
+  el.textContent = msg;
+}
 
 /* ---- Yeni liste ---- */
 $("btn-new-list").addEventListener("click", () => {
@@ -393,99 +404,112 @@ $("btn-new-list").addEventListener("click", () => {
     onOk: async () => {
       const name = $("m-listname").value.trim();
       if (!name) return false;
-      await createList(name);
+      if (!spaceId) { modalError("Alan hazırlanıyor, bir saniye…"); return false; }
+      const ref = await addDoc(collection(db, "spaces", spaceId, "lists"),
+        { title: name, createdAt: serverTimestamp(), createdBy: currentUser.uid }).catch(() => null);
+      if (!ref) { modalError("Oluşturulamadı. İnternetini kontrol et."); return false; }
+      setActiveList(ref.id);
     }
   });
 });
 
-async function createList(title) {
-  const listRef = doc(collection(db, "lists"));
-  const listId = listRef.id;
-  const code = genCode();
-  const batch = writeBatch(db);
-  batch.set(listRef, { title, ownerUid: currentUser.uid, inviteCode: code, createdAt: serverTimestamp() });
-  batch.set(doc(db, "lists", listId, "members", currentUser.uid), { email: currentUser.email || "", joinedAt: serverTimestamp() });
-  batch.set(doc(db, "invites", code), { listId, createdAt: serverTimestamp() });
-  batch.set(doc(db, "users", currentUser.uid, "memberships", listId), { createdAt: serverTimestamp() });
-  await batch.commit();
-  setActiveList(listId);
-}
+/* ---- Eşini davet et (kod göster) ---- */
+$("btn-invite").addEventListener("click", () => {
+  closeDrawer();
+  const code = spaceData?.inviteCode || "…";
+  openModal({
+    title: "Eşini davet et",
+    bodyHTML: `<div class="invite-code" id="m-invite">${code}</div><p class="hint">Bu kodu eşine gönder. O da uygulamada <b>“Listeye katıl”</b> deyip bu kodu girsin. Bağlandıktan sonra <b>tüm listeleriniz</b> ikinizde de anlık görünür.</p>`,
+    okText: "Kopyala",
+    onOk: async (btn) => {
+      try { await navigator.clipboard.writeText(code); btn.textContent = "Kopyalandı ✓"; }
+      catch { btn.textContent = "Kopyalanamadı"; }
+      return false;
+    }
+  });
+});
 
-/* ---- Listeye katıl ---- */
+/* ---- Listeye katıl (kod gir) ---- */
 $("btn-join-list").addEventListener("click", () => {
   closeDrawer();
   openModal({
     title: "Listeye katıl",
-    bodyHTML: '<input id="m-code" type="text" inputmode="text" autocapitalize="characters" placeholder="Davet kodu" style="text-transform:uppercase;letter-spacing:2px;text-align:center;font-size:20px" /><p class="hint">Eşinden aldığın davet kodunu gir.</p>',
+    bodyHTML: '<input id="m-code" type="text" autocapitalize="characters" placeholder="Davet kodu" style="text-transform:uppercase;letter-spacing:3px;text-align:center;font-size:22px" /><p class="hint">Eşinden aldığın kodu gir. Katılınca onun tüm listelerini görürsün. (Kendi mevcut listelerin, sen tekrar kendi alanına dönene kadar görünmez olur.)</p>',
     okText: "Katıl",
-    onOk: async () => {
+    onOk: async (btn) => {
       const code = $("m-code").value.trim().toUpperCase();
       if (!code) return false;
-      const err = await joinList(code);
-      if (err) {
-        let el = $("modal-body").querySelector(".err");
-        if (!el) { el = document.createElement("p"); el.className = "hint err"; el.style.color = "var(--danger)"; $("modal-body").appendChild(el); }
-        el.textContent = err;
-        return false;
-      }
+      btn.textContent = "Katılınıyor…";
+      const err = await joinSpace(code);
+      if (err) { btn.textContent = "Katıl"; modalError(err); return false; }
+      // başarılı: users belgesi güncellendi, snapshot alanı değiştirecek
     }
   });
 });
 
-async function joinList(code) {
+async function joinSpace(code) {
   try {
     const inv = await getDoc(doc(db, "invites", code));
     if (!inv.exists()) return "Kod bulunamadı. Kontrol et.";
-    const listId = inv.data().listId;
-    const mine = await getDoc(doc(db, "users", currentUser.uid, "memberships", listId));
-    if (mine.exists()) { setActiveList(listId); return null; }
+    const newSpaceId = inv.data().spaceId;
+    if (newSpaceId === spaceId) return "Zaten bu alandasınız.";
     const batch = writeBatch(db);
-    batch.set(doc(db, "lists", listId, "members", currentUser.uid), { email: currentUser.email || "", joinedAt: serverTimestamp() });
-    batch.set(doc(db, "users", currentUser.uid, "memberships", listId), { createdAt: serverTimestamp() });
+    batch.set(doc(db, "spaces", newSpaceId, "members", currentUser.uid), { email: currentUser.email || "", joinedAt: serverTimestamp() });
+    batch.update(doc(db, "users", currentUser.uid), { spaceId: newSpaceId });
+    if (spaceId) batch.delete(doc(db, "spaces", spaceId, "members", currentUser.uid));
     await batch.commit();
-    setActiveList(listId);
     return null;
   } catch (e) {
     return "Katılınamadı. İnternetini kontrol et.";
   }
 }
 
+/* ---- Bağlantıyı kes (kendi yeni alanına dön) ---- */
+$("btn-disconnect").addEventListener("click", () => {
+  closeDrawer();
+  openModal({
+    title: "Bağlantıyı kes",
+    bodyHTML: '<p class="hint">Ortak alandan ayrılıp kendine ait yeni, boş bir alana geçeceksin. Eşin kendi alanında listeleri görmeye devam eder. Tekrar bağlanmak için yeniden davet kodu girmen gerekir.</p>',
+    okText: "Bağlantıyı kes", okDanger: true,
+    onOk: async () => {
+      const ok = await disconnectSpace();
+      if (!ok) { modalError("İşlem başarısız. Tekrar dene."); return false; }
+    }
+  });
+});
+
+async function disconnectSpace() {
+  try {
+    const spaceRef = doc(collection(db, "spaces"));
+    const sid = spaceRef.id;
+    const code = genCode();
+    const batch = writeBatch(db);
+    batch.set(spaceRef, { ownerUid: currentUser.uid, inviteCode: code, createdAt: serverTimestamp() });
+    batch.set(doc(db, "spaces", sid, "members", currentUser.uid), { email: currentUser.email || "", joinedAt: serverTimestamp() });
+    batch.set(doc(db, "invites", code), { spaceId: sid, createdAt: serverTimestamp() });
+    batch.update(doc(db, "users", currentUser.uid), { spaceId: sid });
+    if (spaceId) batch.delete(doc(db, "spaces", spaceId, "members", currentUser.uid));
+    await batch.commit();
+    return true;
+  } catch (e) { return false; }
+}
+
 /* ---- Menü: başlığı değiştir ---- */
 $("mi-rename").addEventListener("click", () => {
   closeMenu();
-  const data = listData.get(activeListId);
+  const l = lists.get(activeListId);
   openModal({
     title: "Başlığı değiştir",
-    bodyHTML: `<input id="m-rename" type="text" value="${escapeAttr(data?.title || "")}" />`,
+    bodyHTML: `<input id="m-rename" type="text" value="${escapeAttr(l?.title || "")}" />`,
     okText: "Kaydet",
     onOk: async () => {
       const val = $("m-rename").value.trim();
       if (!val) return false;
-      await updateDoc(doc(db, "lists", activeListId), { title: val }).catch(() => {});
+      await updateDoc(doc(db, "spaces", spaceId, "lists", activeListId), { title: val }).catch(() => {});
     }
   });
 });
-// başlığa dokununca da düzenle
 $("list-title").addEventListener("click", () => { if (activeListId) $("mi-rename").click(); });
-
-/* ---- Menü: davet kodu ---- */
-$("mi-invite").addEventListener("click", () => {
-  closeMenu();
-  const data = listData.get(activeListId);
-  const code = data?.inviteCode || "—";
-  openModal({
-    title: "Davet kodu",
-    bodyHTML: `<div class="invite-code" id="m-invite">${code}</div><p class="hint">Bu kodu eşine gönder. O da uygulamada <b>“Listeye katıl”</b> deyip bu kodu girsin.</p>`,
-    okText: "Kopyala",
-    showCancel: true,
-    onOk: async () => {
-      try { await navigator.clipboard.writeText(code); } catch {}
-      const ok = $("modal-actions").querySelector(".ok");
-      if (ok) ok.textContent = "Kopyalandı ✓";
-      return false; // modalı açık tut
-    }
-  });
-});
 
 /* ---- Menü: tamamlananları temizle ---- */
 $("mi-clear-done").addEventListener("click", () => {
@@ -498,76 +522,47 @@ $("mi-clear-done").addEventListener("click", () => {
     okText: "Temizle", okDanger: true,
     onOk: async () => {
       const batch = writeBatch(db);
-      done.forEach((t) => batch.delete(doc(db, "lists", activeListId, "todos", t.id)));
+      done.forEach((t) => batch.delete(todoRef(t.id)));
       await batch.commit().catch(() => {});
     }
   });
 });
 
-/* ---- Menü: listeden ayrıl / sil ---- */
-$("mi-leave").addEventListener("click", async () => {
+/* ---- Menü: listeyi sil ---- */
+$("mi-delete-list").addEventListener("click", () => {
   closeMenu();
-  const data = listData.get(activeListId);
-  const isowner = data?.ownerUid === currentUser.uid;
+  const l = lists.get(activeListId);
   openModal({
-    title: isowner ? "Listeyi sil" : "Listeden ayrıl",
-    bodyHTML: `<p class="hint">${isowner
-      ? "Bu liste ve içindeki tüm görevler kalıcı olarak silinecek (eşin için de). Emin misin?"
-      : "Bu listeden ayrılacaksın. Sahibi listeyi tutmaya devam eder. Emin misin?"}</p>`,
-    okText: isowner ? "Sil" : "Ayrıl", okDanger: true,
+    title: "Listeyi sil",
+    bodyHTML: `<p class="hint">“${escapeHtml(l?.title || "")}” listesi ve içindeki tüm görevler silinecek (eşin için de). Emin misin?</p>`,
+    okText: "Sil", okDanger: true,
     onOk: async () => {
-      const listId = activeListId;
-      if (isowner) await deleteEntireList(listId);
-      else await leaveList(listId);
+      const lid = activeListId;
+      try {
+        const todosSnap = await getDocs(collection(db, "spaces", spaceId, "lists", lid, "todos"));
+        const batch = writeBatch(db);
+        todosSnap.forEach((d) => batch.delete(doc(db, "spaces", spaceId, "lists", lid, "todos", d.id)));
+        batch.delete(doc(db, "spaces", spaceId, "lists", lid));
+        await batch.commit();
+      } catch (e) { toast("Silinemedi. Tekrar dene."); }
     }
   });
 });
 
-async function deleteEntireList(listId) {
-  const data = listData.get(listId);
-  try {
-    const todosSnap = await getDocs(collection(db, "lists", listId, "todos"));
-    const batch = writeBatch(db);
-    todosSnap.forEach((d) => batch.delete(doc(db, "lists", listId, "todos", d.id)));
-    batch.delete(doc(db, "lists", listId, "members", currentUser.uid));
-    if (data?.inviteCode) batch.delete(doc(db, "invites", data.inviteCode));
-    batch.delete(doc(db, "lists", listId));
-    batch.delete(doc(db, "users", currentUser.uid, "memberships", listId));
-    await batch.commit();
-  } catch (e) {
-    toast("Silinemedi. Tekrar dene.");
-  }
-}
-
-async function leaveList(listId) {
-  try {
-    const batch = writeBatch(db);
-    batch.delete(doc(db, "lists", listId, "members", currentUser.uid));
-    batch.delete(doc(db, "users", currentUser.uid, "memberships", listId));
-    await batch.commit();
-  } catch (e) {
-    toast("Ayrılınamadı. Tekrar dene.");
-  }
-}
-
 /* ================================================================
-   SNACKBAR / TOAST
+   SNACKBAR
 ================================================================ */
 function showSnackbar(text, onUndo) {
   clearTimeout(undoTimer);
   $("snackbar-text").textContent = text;
-  const btn = $("snackbar-action");
-  show($("snackbar-action"));
-  show($("snackbar"));
-  const handler = () => { hide($("snackbar")); clearTimeout(undoTimer); onUndo && onUndo(); };
-  btn.onclick = handler;
+  show($("snackbar-action")); show($("snackbar"));
+  $("snackbar-action").onclick = () => { hide($("snackbar")); clearTimeout(undoTimer); onUndo && onUndo(); };
   undoTimer = setTimeout(() => hide($("snackbar")), 5000);
 }
 function toast(text) {
   clearTimeout(undoTimer);
   $("snackbar-text").textContent = text;
-  hide($("snackbar-action"));
-  show($("snackbar"));
+  hide($("snackbar-action")); show($("snackbar"));
   undoTimer = setTimeout(() => hide($("snackbar")), 2500);
 }
 
@@ -575,31 +570,28 @@ function toast(text) {
    TEMİZLİK / YARDIMCI
 ================================================================ */
 function cleanupAll() {
-  if (membershipUnsub) { membershipUnsub(); membershipUnsub = null; }
+  if (userDocUnsub) { userDocUnsub(); userDocUnsub = null; }
+  if (spaceDocUnsub) { spaceDocUnsub(); spaceDocUnsub = null; }
+  if (listsUnsub) { listsUnsub(); listsUnsub = null; }
   if (todosUnsub) { todosUnsub(); todosUnsub = null; }
-  for (const un of listDocUnsubs.values()) un();
-  listDocUnsubs.clear();
-  listData.clear();
-  currentTodos = [];
   if (sortable) { sortable.destroy(); sortable = null; }
-  $("todo-list").innerHTML = "";
-  $("lists-ul").innerHTML = "";
+  lists.clear(); currentTodos = []; spaceId = null; spaceData = null; activeListId = null;
+  $("todo-list").innerHTML = ""; $("lists-ul").innerHTML = "";
   renderHeader();
 }
 
 function genCode() {
-  const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // karışabilenler (0,O,1,I,L) çıkarıldı
+  const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
   let s = "";
   for (let i = 0; i < 6; i++) s += chars[Math.floor(Math.random() * chars.length)];
   return s;
 }
-function escapeAttr(s) { return String(s).replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+function escapeAttr(s) { return String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+function escapeHtml(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 
 /* ================================================================
-   SERVICE WORKER (PWA)
+   SERVICE WORKER
 ================================================================ */
 if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("sw.js").catch(() => {});
-  });
+  window.addEventListener("load", () => { navigator.serviceWorker.register("sw.js").catch(() => {}); });
 }

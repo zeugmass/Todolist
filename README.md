@@ -28,9 +28,11 @@ Firebase Console → **Firestore Database → Rules** sekmesi →
 ### 3) iPhone'da ana ekrana ekle
 Safari ile adresi aç → **Paylaş** → **Ana Ekrana Ekle**.
 
-### 4) Eşinle bağlan
-- Sen: Üye ol → Yeni liste oluştur → sağ üst menü → **Davet kodunu göster** → kodu eşine yolla.
-- Eşin: Kendi hesabıyla üye ol → sol menü → **Listeye katıl** → kodu gir. Tamam!
+### 4) Eşinle bağlan (bir kere)
+- Sen: sol menü → **Eşini davet et (kod göster)** → kodu eşine yolla.
+- Eşin: kendi hesabıyla üye ol → sol menü → **Listeye katıl** → kodu gir.
+- Bağlandıktan sonra **tüm listeler** (mevcut ve yeni) ikinizde de anlık senkron görünür.
+- Bağı koparmak için: sol menü → **Bağlantıyı kes** (kendi boş alanına dönersin).
 
 ## Not
 `firebase-config.js` içindeki `apiKey` gizli değildir; güvenlik Firestore kurallarıyla sağlanır.
