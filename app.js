@@ -4,7 +4,7 @@ import {
   signInWithEmailAndPassword, signOut, setPersistence, browserLocalPersistence
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
-  initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
+  initializeFirestore, persistentLocalCache, persistentSingleTabManager,
   collection, doc, addDoc, setDoc, updateDoc, deleteDoc, getDoc, getDocs,
   onSnapshot, query, orderBy, serverTimestamp, writeBatch
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
@@ -13,8 +13,10 @@ import { firebaseConfig } from "./firebase-config.js";
 /* ---------- Firebase ---------- */
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
+// iOS/PWA'da güvenilir canlı senkron için: tek-sekme önbelleği + uzun-yoklama transportu.
 const db = initializeFirestore(app, {
-  localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() })
+  localCache: persistentLocalCache({ tabManager: persistentSingleTabManager({ forceOwnership: true }) }),
+  experimentalForceLongPolling: true
 });
 setPersistence(auth, browserLocalPersistence).catch(() => {});
 
@@ -22,6 +24,25 @@ setPersistence(auth, browserLocalPersistence).catch(() => {});
 const $ = (id) => document.getElementById(id);
 const show = (el) => el.classList.remove("hidden");
 const hide = (el) => el.classList.add("hidden");
+
+/* ---------- Debug (?debug=1 ile ekran-üstü günlük) ---------- */
+const DEBUG = new URLSearchParams(location.search).has("debug");
+const t0 = performance.now();
+let dbgEl = null;
+function dbg(msg) {
+  const line = `[+${((performance.now() - t0) / 1000).toFixed(2)}s] ${msg}`;
+  try { console.log(line); } catch {}
+  if (!DEBUG) return;
+  if (!dbgEl) {
+    dbgEl = document.createElement("div");
+    dbgEl.style.cssText = "position:fixed;left:0;right:0;bottom:0;max-height:40vh;overflow:auto;background:rgba(0,0,0,.88);color:#31d158;font:11px/1.4 ui-monospace,monospace;padding:8px;z-index:99999;white-space:pre-wrap;border-top:2px solid #31d158";
+    document.body.appendChild(dbgEl);
+  }
+  dbgEl.textContent += line + "\n";
+  dbgEl.scrollTop = dbgEl.scrollHeight;
+}
+const ms = (t) => Math.round(performance.now() - t) + "ms";
+dbg("uygulama başladı");
 
 /* ---------- Durum ---------- */
 let currentUser = null;
@@ -141,6 +162,8 @@ async function createPersonalSpace() {
 }
 
 function switchToSpace(newSpaceId) {
+  if (!newSpaceId || newSpaceId === spaceId) return; // aynı alansa tekrar kurma
+  dbg("alan değişiyor → " + newSpaceId.slice(0, 6));
   // eski alanın aboneliklerini kapat
   if (spaceDocUnsub) { spaceDocUnsub(); spaceDocUnsub = null; }
   if (listsUnsub) { listsUnsub(); listsUnsub = null; }
@@ -157,8 +180,12 @@ function switchToSpace(newSpaceId) {
   }, () => {});
 
   // listeler (anlık)
+  const tSub = performance.now();
+  let firstLists = true;
   const q = query(collection(db, "spaces", spaceId, "lists"), orderBy("createdAt"));
   listsUnsub = onSnapshot(q, (snap) => {
+    if (firstLists) { dbg(`ilk liste anlık geldi ${ms(tSub)} (önbellek:${snap.metadata.fromCache}, adet:${snap.size})`); firstLists = false; }
+    else dbg(`liste güncellendi (önbellek:${snap.metadata.fromCache}, adet:${snap.size})`);
     lists.clear();
     snap.forEach((d) => lists.set(d.id, { id: d.id, ...d.data() }));
 
@@ -223,8 +250,12 @@ function subscribeTodos(listId) {
   $("todo-list").innerHTML = "";
   if (!listId) { updateEmptyStates(); return; }
 
+  const tSub = performance.now();
+  let firstTodos = true;
   const q = query(collection(db, "spaces", spaceId, "lists", listId, "todos"), orderBy("order"));
   todosUnsub = onSnapshot(q, (snap) => {
+    if (firstTodos) { dbg(`ilk görevler geldi ${ms(tSub)} (önbellek:${snap.metadata.fromCache}, adet:${snap.size})`); firstTodos = false; }
+    else dbg(`görevler güncellendi (önbellek:${snap.metadata.fromCache}, adet:${snap.size})`);
     currentTodos = [];
     snap.forEach((d) => currentTodos.push({ id: d.id, ...d.data() }));
     renderTodos();
@@ -449,7 +480,10 @@ $("btn-join-list").addEventListener("click", () => {
 
 async function joinSpace(code) {
   try {
+    dbg("katıl: kod aranıyor…");
+    const tGet = performance.now();
     const inv = await getDoc(doc(db, "invites", code));
+    dbg(`katıl: kod arandı ${ms(tGet)} (bulundu:${inv.exists()})`);
     if (!inv.exists()) return "Kod bulunamadı. Kontrol et.";
     const newSpaceId = inv.data().spaceId;
     if (newSpaceId === spaceId) return "Zaten bu alandasınız.";
@@ -457,9 +491,13 @@ async function joinSpace(code) {
     batch.set(doc(db, "spaces", newSpaceId, "members", currentUser.uid), { email: currentUser.email || "", joinedAt: serverTimestamp() });
     batch.update(doc(db, "users", currentUser.uid), { spaceId: newSpaceId });
     if (spaceId) batch.delete(doc(db, "spaces", spaceId, "members", currentUser.uid));
+    const tCommit = performance.now();
     await batch.commit();
+    dbg(`katıl: yazıldı ${ms(tCommit)}`);
+    switchToSpace(newSpaceId); // anlık: snapshot'ı bekleme
     return null;
   } catch (e) {
+    dbg("katıl HATA: " + (e.code || e.message));
     return "Katılınamadı. İnternetini kontrol et.";
   }
 }
@@ -489,9 +527,12 @@ async function disconnectSpace() {
     batch.set(doc(db, "invites", code), { spaceId: sid, createdAt: serverTimestamp() });
     batch.update(doc(db, "users", currentUser.uid), { spaceId: sid });
     if (spaceId) batch.delete(doc(db, "spaces", spaceId, "members", currentUser.uid));
+    const tCommit = performance.now();
     await batch.commit();
+    dbg(`bağlantı kesildi, yazıldı ${ms(tCommit)}`);
+    switchToSpace(sid); // anlık: snapshot'ı bekleme
     return true;
-  } catch (e) { return false; }
+  } catch (e) { dbg("bağlantı kes HATA: " + (e.code || e.message)); return false; }
 }
 
 /* ---- Menü: başlığı değiştir ---- */
