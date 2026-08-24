@@ -181,11 +181,16 @@ input:focus { border-color: var(--accent); }
 .suggest-item .s-plus { color: var(--muted); font-weight: 700; }
 
 /* Görev düzenleme penceresi alanları */
-#modal-body select, #modal-body input[type="datetime-local"] {
+#modal-body select, #modal-body input[type="datetime-local"],
+#modal-body input[type="time"], #modal-body input[type="number"] {
   width: 100%; padding: 13px; border: 1px solid var(--border); border-radius: var(--radius);
   background: var(--surface); color: var(--text); font-size: 16px; margin-bottom: 8px;
 }
 .field-label { font-size: 13px; color: var(--muted); margin: 10px 0 6px; }
+.e-block { margin-top: 2px; }
+.weekday-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; }
+.wd { padding: 10px 0; border-radius: 10px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); font-size: 13px; font-weight: 600; }
+.wd.sel { border-color: var(--accent); background: var(--accent); color: var(--accent-contrast); }
 
 /* Emoji seçici */
 .emoji-label { font-size: 13px; color: var(--muted); margin: 12px 0 6px; }

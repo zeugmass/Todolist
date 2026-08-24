@@ -67,9 +67,18 @@ function emojiGridHTML(selected) {
 }
 
 /* ---------- Tarih / tekrar yardımcıları ---------- */
-const REPEAT_OPTS = [["", "Tekrar yok"], ["daily", "Her gün"], ["weekdays", "Hafta içi (Pzt-Cum)"], ["weekly", "Her hafta"], ["monthly", "Her ay"]];
-const REPEAT_LABEL = { daily: "Her gün", weekdays: "Hafta içi", weekly: "Her hafta", monthly: "Her ay" };
+const WD_ORDER = [1, 2, 3, 4, 5, 6, 0]; // Pzt..Paz (JS getDay)
+const WD_SHORT = { 1: "Pzt", 2: "Sal", 3: "Çar", 4: "Per", 5: "Cum", 6: "Cmt", 0: "Paz" };
 const AY = ["Oca", "Şub", "Mar", "Nis", "May", "Haz", "Tem", "Ağu", "Eyl", "Eki", "Kas", "Ara"];
+function repeatLabel(t) {
+  if (t.repeat === "daily") return "Her gün";
+  if (t.repeat === "monthly") return "Her ay";
+  if (t.repeat === "weekly" || t.repeat === "weekdays") {
+    const days = (t.weekdays && t.weekdays.length) ? t.weekdays : (t.repeat === "weekdays" ? [1, 2, 3, 4, 5] : []);
+    return WD_ORDER.filter((d) => days.includes(d)).map((d) => WD_SHORT[d]).join(",");
+  }
+  return "";
+}
 
 function formatDue(msv) {
   if (!msv) return null;
@@ -89,19 +98,46 @@ function formatDue(msv) {
   else if (dayDiff === 0) cls = "today";
   return { label, cls };
 }
-function nextDue(msv, repeat) {
-  let d = new Date(msv || Date.now());
-  const bump = () => {
-    if (repeat === "weekly") d.setDate(d.getDate() + 7);
-    else if (repeat === "monthly") d.setMonth(d.getMonth() + 1);
-    else if (repeat === "weekdays") { do { d.setDate(d.getDate() + 1); } while (d.getDay() === 0 || d.getDay() === 6); }
-    else d.setDate(d.getDate() + 1); // daily
-  };
-  bump();
-  let guard = 0;
-  while (d.getTime() <= Date.now() && guard++ < 500) bump();
+function nextDueFor(t) {
+  const now = Date.now();
+  if (t.repeat === "daily") {
+    const d = new Date(t.dueAt || now);
+    do { d.setDate(d.getDate() + 1); } while (d.getTime() <= now);
+    return d.getTime();
+  }
+  if (t.repeat === "monthly") {
+    const d = new Date(t.dueAt || now);
+    do { d.setMonth(d.getMonth() + 1); } while (d.getTime() <= now);
+    return d.getTime();
+  }
+  if (t.repeat === "weekly" || t.repeat === "weekdays") {
+    const days = (t.weekdays && t.weekdays.length) ? t.weekdays : [1, 2, 3, 4, 5];
+    const cur = new Date(t.dueAt || now);
+    const h = cur.getHours(), m = cur.getMinutes();
+    for (let i = 1; i <= 14; i++) {
+      const d = new Date(cur); d.setDate(cur.getDate() + i); d.setHours(h, m, 0, 0);
+      if (days.includes(d.getDay()) && d.getTime() > now) return d.getTime();
+    }
+  }
+  return (t.dueAt || now) + 7 * 86400000;
+}
+// İlk kurulum: seçilen desene göre en yakın gelecek zaman
+function dailyInitial(h, m) { const d = new Date(); d.setHours(h, m, 0, 0); if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1); return d.getTime(); }
+function weeklyInitial(days, h, m) {
+  for (let i = 0; i <= 14; i++) {
+    const d = new Date(); d.setDate(d.getDate() + i); d.setHours(h, m, 0, 0);
+    if (days.includes(d.getDay()) && d.getTime() > Date.now()) return d.getTime();
+  }
+  return Date.now();
+}
+function monthlyInitial(day, h, m) {
+  const dd = Math.min(Math.max(day, 1), 28);
+  const d = new Date(); d.setDate(dd); d.setHours(h, m, 0, 0);
+  if (d.getTime() <= Date.now()) d.setMonth(d.getMonth() + 1);
   return d.getTime();
 }
+function parseTime(v) { if (!v) return [9, 0]; const p = v.split(":"); return [(+p[0]) || 0, (+p[1]) || 0]; }
+function timeFromMs(msv) { if (!msv) return "09:00"; const d = new Date(msv); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; }
 function msToLocalInput(msv) {
   if (!msv) return "";
   const d = new Date(msv - new Date().getTimezoneOffset() * 60000);
@@ -437,7 +473,7 @@ function todoRow(t) {
     meta.className = "todo-meta";
     if (t.note) { const n = document.createElement("span"); n.className = "todo-note"; n.textContent = t.note; meta.appendChild(n); }
     if (due) { const p = document.createElement("span"); p.className = "due-pill " + due.cls; p.textContent = due.label; meta.appendChild(p); }
-    if (t.repeat) { const r = document.createElement("span"); r.className = "repeat-badge"; r.textContent = "🔁 " + (REPEAT_LABEL[t.repeat] || ""); meta.appendChild(r); }
+    if (t.repeat) { const r = document.createElement("span"); r.className = "repeat-badge"; r.textContent = "🔁 " + repeatLabel(t); meta.appendChild(r); }
     wrap.appendChild(meta);
   }
   wrap.addEventListener("click", () => toggleTodo(t));
@@ -491,7 +527,7 @@ function toggleTodo(t) {
   if (navigator.vibrate) navigator.vibrate(8);
   // Tekrarlayan görev: tamamlayınca silinmez/işaretlenmez, bir sonraki tarihe atlar
   if (!t.done && t.repeat) {
-    const next = nextDue(t.dueAt, t.repeat);
+    const next = nextDueFor(t);
     updateDoc(todoRef(t.id), { dueAt: next, done: false }).catch(() => {});
     const f = formatDue(next);
     toast("🔁 Tekrarlandı → " + (f ? f.label : ""));
@@ -504,31 +540,70 @@ function toggleTodo(t) {
 }
 
 function openTodoEditor(t) {
-  const opts = REPEAT_OPTS.map(([v, l]) => `<option value="${v}"${(t.repeat || "") === v ? " selected" : ""}>${l}</option>`).join("");
+  const rep = t.repeat === "weekdays" ? "weekly" : (t.repeat || "");
+  const sel = (v) => rep === v ? " selected" : "";
+  const days = t.weekdays || (t.repeat === "weekdays" ? [1, 2, 3, 4, 5] : []);
+  const chips = WD_ORDER.map((d) => `<button type="button" class="wd${days.includes(d) ? " sel" : ""}" data-d="${d}">${WD_SHORT[d]}</button>`).join("");
+  const time = timeFromMs(t.dueAt);
+  const monthDay = t.dueAt ? Math.min(new Date(t.dueAt).getDate(), 28) : 1;
   openModal({
     title: "Görevi düzenle",
-    bodyHTML: `<input id="e-text" type="text" value="${escapeAttr(t.text)}" placeholder="Görev" />
+    bodyHTML: `
+      <input id="e-text" type="text" value="${escapeAttr(t.text)}" placeholder="Görev" />
       <input id="e-note" type="text" placeholder="Miktar / not (isteğe bağlı)" value="${escapeAttr(t.note || "")}" />
-      <div class="field-label">Son tarih (isteğe bağlı)</div>
-      <input id="e-due" type="datetime-local" value="${msToLocalInput(t.dueAt)}" />
       <div class="field-label">Tekrar</div>
-      <select id="e-repeat">${opts}</select>`,
+      <select id="e-repeat">
+        <option value=""${sel("")}>Yok</option>
+        <option value="daily"${sel("daily")}>Her gün</option>
+        <option value="weekly"${sel("weekly")}>Haftalık (gün seç)</option>
+        <option value="monthly"${sel("monthly")}>Her ay</option>
+      </select>
+      <div id="e-oneoff" class="e-block"><div class="field-label">Son tarih (isteğe bağlı)</div><input id="e-due" type="datetime-local" value="${msToLocalInput(rep === "" ? t.dueAt : 0)}" /></div>
+      <div id="e-weekdays-wrap" class="e-block"><div class="field-label">Günler</div><div id="e-weekdays" class="weekday-grid">${chips}</div></div>
+      <div id="e-monthday-wrap" class="e-block"><div class="field-label">Ayın günü (1–28)</div><input id="e-monthday" type="number" min="1" max="28" value="${monthDay}" /></div>
+      <div id="e-time-wrap" class="e-block"><div class="field-label">Saat</div><input id="e-time" type="time" value="${time}" /></div>`,
     okText: "Kaydet",
     onOk: async () => {
       const text = $("e-text").value.trim();
       if (!text) return false;
       const note = $("e-note").value.trim();
-      const dueAt = localInputToMs($("e-due").value);
       const repeat = $("e-repeat").value;
-      await updateDoc(todoRef(t.id), { text, note, dueAt, repeat }).catch(() => {});
+      const [th, tm] = parseTime($("e-time").value);
+      let dueAt = 0, weekdays = [];
+      if (repeat === "") dueAt = localInputToMs($("e-due").value);
+      else if (repeat === "daily") dueAt = dailyInitial(th, tm);
+      else if (repeat === "weekly") {
+        weekdays = [...$("e-weekdays").querySelectorAll(".wd.sel")].map((x) => +x.dataset.d);
+        if (weekdays.length === 0) { modalError("En az bir gün seç."); return false; }
+        dueAt = weeklyInitial(weekdays, th, tm);
+      } else if (repeat === "monthly") {
+        const md = Math.min(Math.max(parseInt($("e-monthday").value) || 1, 1), 28);
+        dueAt = monthlyInitial(md, th, tm);
+      }
+      await updateDoc(todoRef(t.id), { text, note, dueAt, repeat, weekdays }).catch(() => {});
     }
   });
+  wireEditor();
+}
+
+function wireEditor() {
+  const rep = $("e-repeat");
+  const upd = () => {
+    const v = rep.value;
+    $("e-oneoff").style.display = v === "" ? "block" : "none";
+    $("e-weekdays-wrap").style.display = v === "weekly" ? "block" : "none";
+    $("e-monthday-wrap").style.display = v === "monthly" ? "block" : "none";
+    $("e-time-wrap").style.display = (v === "daily" || v === "weekly" || v === "monthly") ? "block" : "none";
+  };
+  rep.addEventListener("change", upd); upd();
+  $("e-weekdays").addEventListener("click", (e) => { const b = e.target.closest(".wd"); if (b) b.classList.toggle("sel"); });
 }
 
 function deleteTodo(t) {
   const data = { text: t.text, note: t.note || "", done: !!t.done, order: t.order, createdAt: t.createdAt || serverTimestamp(), createdBy: t.createdBy || currentUser.uid, createdByEmail: t.createdByEmail || "" };
   if (t.dueAt) data.dueAt = t.dueAt;
   if (t.repeat) data.repeat = t.repeat;
+  if (t.weekdays) data.weekdays = t.weekdays;
   if (t.doneBy) { data.doneBy = t.doneBy; data.doneByEmail = t.doneByEmail || ""; }
   const id = t.id, sid = spaceId, lid = activeListId;
   deleteDoc(doc(db, "spaces", sid, "lists", lid, "todos", id)).catch(() => {});
@@ -860,5 +935,17 @@ function escapeHtml(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "
    SERVICE WORKER
 ================================================================ */
 if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => { navigator.serviceWorker.register("sw.js").catch(() => {}); });
+  // Yeni sürüm devreye girince sayfayı bir kez otomatik yenile (PWA kodunu güncel tut)
+  let refreshing = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (refreshing) return;
+    refreshing = true;
+    location.reload();
+  });
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").then((reg) => {
+      reg.update().catch(() => {});
+      setInterval(() => reg.update().catch(() => {}), 30 * 60 * 1000); // yarım saatte bir güncelleme kontrolü
+    }).catch(() => {});
+  });
 }
