@@ -1,11 +1,11 @@
 // Görevler PWA - service worker
 // Kod güncellenince sürümü artır: v2 -> v3 ...
-const CACHE = "gorevler-v3";
+const CACHE = "gorevler-v4";
 
 const APP_SHELL = [
   "./", "./index.html", "./styles.css", "./app.js", "./firebase-config.js",
-  "./manifest.webmanifest", "./icon-192.png", "./icon-512.png",
-  "./apple-touch-icon.png", "./favicon-32.png"
+  "./firebase-messaging-sw.js", "./manifest.webmanifest", "./icon-192.png",
+  "./icon-512.png", "./apple-touch-icon.png", "./favicon-32.png"
 ];
 
 self.addEventListener("install", (e) => {

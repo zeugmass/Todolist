@@ -6,9 +6,10 @@ import {
 import {
   initializeFirestore, persistentLocalCache, persistentSingleTabManager,
   collection, doc, addDoc, setDoc, updateDoc, deleteDoc, getDoc, getDocs,
-  onSnapshot, query, orderBy, serverTimestamp, writeBatch, increment, deleteField
+  onSnapshot, query, orderBy, serverTimestamp, writeBatch, increment, deleteField, arrayUnion
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { firebaseConfig } from "./firebase-config.js";
+import { getMessaging, getToken, onMessage, isSupported } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging.js";
+import { firebaseConfig, VAPID_KEY } from "./firebase-config.js";
 
 /* ---------- Firebase ---------- */
 const app = initializeApp(firebaseConfig);
@@ -233,6 +234,7 @@ onAuthStateChanged(auth, (user) => {
     $("user-email").textContent = user.email || "";
     hide($("screen-loading")); hide($("screen-auth"));
     show($("screen-main"));
+    updateNotifButton();
     startUserDoc();
   } else {
     cleanupAll();
@@ -1050,6 +1052,42 @@ function genCode() {
 }
 function escapeAttr(s) { return String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 function escapeHtml(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+
+/* ================================================================
+   BİLDİRİMLER (Push / FCM)
+================================================================ */
+const isStandalone = () => window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
+
+function updateNotifButton() {
+  const b = $("btn-notif");
+  if (!b) return;
+  const granted = ("Notification" in window) && Notification.permission === "granted";
+  b.textContent = granted ? "🔔 Bildirimler açık" : "🔔 Bildirimleri aç";
+}
+
+async function enableNotifications() {
+  if (!("Notification" in window)) { toast("Bu cihaz bildirim desteklemiyor."); return; }
+  if (!isStandalone()) { toast("Önce uygulamayı ana ekrana ekleyip oradan aç."); return; }
+  let perm;
+  try { perm = await Notification.requestPermission(); } catch { toast("İzin istenemedi."); return; }
+  if (perm !== "granted") { toast("Bildirim izni verilmedi."); return; }
+  try {
+    if (!(await isSupported().catch(() => false))) { toast("Bu tarayıcı push desteklemiyor."); return; }
+    const reg = await navigator.serviceWorker.register("firebase-messaging-sw.js");
+    const messaging = getMessaging(app);
+    const token = await getToken(messaging, { vapidKey: VAPID_KEY, serviceWorkerRegistration: reg });
+    if (!token) { toast("Bildirim jetonu alınamadı."); return; }
+    dbg("fcm token alındı: " + token.slice(0, 12) + "…");
+    await setDoc(doc(db, "users", currentUser.uid), { fcmTokens: arrayUnion(token) }, { merge: true });
+    onMessage(messaging, (payload) => {
+      const d = payload.notification || payload.data || {};
+      toast("🔔 " + (d.title || "Bildirim") + (d.body ? " — " + d.body : ""));
+    });
+    updateNotifButton();
+    toast("Bildirimler açıldı ✓");
+  } catch (e) { dbg("bildirim HATA: " + (e.code || e.message)); toast("Bildirim açılamadı."); }
+}
+$("btn-notif").addEventListener("click", () => enableNotifications());
 
 /* ================================================================
    SERVICE WORKER
