@@ -44,6 +44,28 @@ function dbg(msg) {
 const ms = (t) => Math.round(performance.now() - t) + "ms";
 dbg("uygulama başladı");
 
+/* ---------- Özellik yardımcıları ---------- */
+const LIST_EMOJIS = ["🛒","🍎","🧹","🏠","💊","🎁","📚","💼","🧺","🍽️","🛠️","🚗","✈️","🎉","📌","📝"];
+let memberCount = 1;
+let completedCollapsed = false;
+function personColor(uid) { let h = 0; const s = uid || ""; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0; return `hsl(${h % 360} 55% 45%)`; }
+function initialOf(email) { const e = (email || "?").trim(); return (e[0] || "?").toUpperCase(); }
+function wireEmojiGrid() {
+  const grid = $("m-emoji");
+  if (!grid) return;
+  grid.addEventListener("click", (e) => {
+    const b = e.target.closest(".emoji-opt");
+    if (!b) return;
+    const already = b.classList.contains("sel");
+    grid.querySelectorAll(".emoji-opt").forEach((x) => x.classList.remove("sel"));
+    if (!already) b.classList.add("sel");
+    grid.dataset.selected = already ? "" : b.dataset.e;
+  });
+}
+function emojiGridHTML(selected) {
+  return LIST_EMOJIS.map((e) => `<button type="button" class="emoji-opt${selected === e ? " sel" : ""}" data-e="${e}">${e}</button>`).join("");
+}
+
 /* ---------- Durum ---------- */
 let currentUser = null;
 let userDocUnsub = null;
@@ -244,7 +266,7 @@ function setActiveList(listId) {
 
 function renderHeader() {
   const l = activeListId ? lists.get(activeListId) : null;
-  $("list-title").textContent = l ? l.title : "Görevler";
+  $("list-title").textContent = l ? ((l.emoji ? l.emoji + " " : "") + l.title) : "Görevler";
 }
 
 // Bağlantı durumu: 1 kişi = yalnız (buton gizli), 2+ = eşinle bağlı (buton görünür)
@@ -254,6 +276,7 @@ function setConnStatus(count) {
   const s = $("conn-status");
   s.textContent = linked ? `🔗 Eşinle bağlı (${count} kişi)` : "Yalnız kullanım";
   s.classList.toggle("linked", linked);
+  if (count !== memberCount) { memberCount = count; if (spaceId) renderTodos(); }
 }
 
 function renderLists() {
@@ -264,7 +287,7 @@ function renderLists() {
     li.className = "list-row" + (l.id === activeListId ? " active" : "");
     const name = document.createElement("span");
     name.className = "name";
-    name.textContent = l.title || "(başlıksız)";
+    name.textContent = (l.emoji ? l.emoji + " " : "") + (l.title || "(başlıksız)");
     li.appendChild(name);
     li.addEventListener("click", () => { setActiveList(l.id); closeDrawer(); });
     ul.appendChild(li);
@@ -285,7 +308,8 @@ function updateEmptyStates() {
 function subscribeTodos(listId) {
   if (todosUnsub) { todosUnsub(); todosUnsub = null; }
   currentTodos = [];
-  $("todo-list").innerHTML = "";
+  $("todo-list").innerHTML = ""; $("completed-list").innerHTML = "";
+  $("completed-section").classList.add("hidden"); $("counter-bar").classList.add("hidden");
   if (!listId) { updateEmptyStates(); return; }
 
   const tSub = performance.now();
@@ -302,12 +326,32 @@ function subscribeTodos(listId) {
 }
 
 function renderTodos() {
+  const active = currentTodos.filter((t) => !t.done);
+  const done = currentTodos.filter((t) => t.done);
+
   const ul = $("todo-list");
   ul.innerHTML = "";
-  currentTodos.forEach((t) => ul.appendChild(todoRow(t)));
+  active.forEach((t) => ul.appendChild(todoRow(t)));
 
+  const cl = $("completed-list");
+  cl.innerHTML = "";
+  done.forEach((t) => cl.appendChild(todoRow(t)));
+
+  // Tamamlananlar bölümü
+  $("completed-section").classList.toggle("hidden", done.length === 0);
+  $("completed-header").textContent = `${completedCollapsed ? "▸" : "▾"} Tamamlananlar (${done.length})`;
+  cl.classList.toggle("hidden", completedCollapsed);
+
+  // Sayaç
+  const cb = $("counter-bar");
+  if (currentTodos.length > 0) {
+    cb.classList.remove("hidden");
+    cb.textContent = `${active.length} kaldı · ${done.length} tamamlandı`;
+  } else cb.classList.add("hidden");
+
+  // Sürükle-sırala yalnızca aktif görevlerde
   if (sortable) { sortable.destroy(); sortable = null; }
-  if (currentTodos.length > 1 && typeof Sortable !== "undefined") {
+  if (active.length > 1 && typeof Sortable !== "undefined") {
     sortable = Sortable.create(ul, {
       animation: 150, delay: 200, delayOnTouchOnly: true,
       ghostClass: "sortable-ghost", onEnd: onReorder
@@ -326,10 +370,35 @@ function todoRow(t) {
   cb.innerHTML = '<svg viewBox="0 0 24 24" width="15" height="15"><path d="M5 13l4 4L19 7" fill="none" stroke="var(--accent-contrast)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   cb.addEventListener("click", (e) => { e.stopPropagation(); toggleTodo(t); });
 
+  const wrap = document.createElement("div");
+  wrap.className = "todo-text-wrap";
   const span = document.createElement("span");
   span.className = "todo-text";
   span.textContent = t.text;
-  span.addEventListener("click", () => toggleTodo(t));
+  wrap.appendChild(span);
+  if (t.note) {
+    const note = document.createElement("span");
+    note.className = "todo-note";
+    note.textContent = t.note;
+    wrap.appendChild(note);
+  }
+  wrap.addEventListener("click", () => toggleTodo(t));
+
+  li.append(cb, wrap);
+
+  // Kim ekledi / kim tamamladı (yalnızca eşinle bağlıyken)
+  if (memberCount > 1) {
+    const email = t.done ? (t.doneByEmail || t.createdByEmail) : t.createdByEmail;
+    const cuid = t.done ? (t.doneBy || t.createdBy) : t.createdBy;
+    if (email) {
+      const chip = document.createElement("span");
+      chip.className = "who-chip";
+      chip.textContent = initialOf(email);
+      chip.style.background = personColor(cuid);
+      chip.title = (t.done ? "Tamamlayan: " : "Ekleyen: ") + email;
+      li.appendChild(chip);
+    }
+  }
 
   const edit = document.createElement("button");
   edit.className = "row-del";
@@ -343,7 +412,7 @@ function todoRow(t) {
   del.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18"><path d="M6 7h12M9 7V5h6v2M8 7l1 12h6l1-12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   del.addEventListener("click", (e) => { e.stopPropagation(); deleteTodo(t); });
 
-  li.append(cb, span, edit, del);
+  li.append(edit, del);
   return li;
 }
 
@@ -352,42 +421,57 @@ function todoRef(id) { return doc(db, "spaces", spaceId, "lists", activeListId, 
 async function addTodo(text) {
   if (!activeListId) return;
   const col = collection(db, "spaces", spaceId, "lists", activeListId, "todos");
-  await addDoc(col, { text, done: false, order: Date.now(), createdAt: serverTimestamp(), createdBy: currentUser.uid }).catch(() => {});
+  await addDoc(col, { text, note: "", done: false, order: Date.now(), createdAt: serverTimestamp(), createdBy: currentUser.uid, createdByEmail: currentUser.email || "" }).catch(() => {});
   const scroll = $("todo-scroll");
   requestAnimationFrame(() => { scroll.scrollTop = scroll.scrollHeight; });
 }
 
 function toggleTodo(t) {
   if (navigator.vibrate) navigator.vibrate(8);
-  updateDoc(todoRef(t.id), { done: !t.done }).catch(() => {});
+  const nowDone = !t.done;
+  const upd = { done: nowDone };
+  if (nowDone) { upd.doneBy = currentUser.uid; upd.doneByEmail = currentUser.email || ""; upd.doneAt = serverTimestamp(); }
+  updateDoc(todoRef(t.id), upd).catch(() => {});
 }
 
 function startEdit(li, t) {
-  if (li.querySelector(".todo-edit")) return;
-  const span = li.querySelector(".todo-text");
-  const input = document.createElement("input");
-  input.className = "todo-edit";
-  input.value = t.text;
-  li.replaceChild(input, span);
-  input.focus();
-  input.setSelectionRange(input.value.length, input.value.length);
+  if (li.querySelector(".edit-box")) return;
+  const wrap = li.querySelector(".todo-text-wrap");
+  const box = document.createElement("div");
+  box.className = "edit-box";
+  const inText = document.createElement("input");
+  inText.className = "todo-edit";
+  inText.value = t.text;
+  const inNote = document.createElement("input");
+  inNote.className = "todo-edit note-edit";
+  inNote.placeholder = "Miktar / not (isteğe bağlı)";
+  inNote.value = t.note || "";
+  box.append(inText, inNote);
+  li.replaceChild(box, wrap);
+  inText.focus();
+  inText.setSelectionRange(inText.value.length, inText.value.length);
 
   let finished = false;
   const save = async () => {
     if (finished) return; finished = true;
-    const val = input.value.trim();
-    if (val && val !== t.text) await updateDoc(todoRef(t.id), { text: val }).catch(() => {});
+    const text = inText.value.trim();
+    const note = inNote.value.trim();
+    if (!text) { renderTodos(); return; }
+    if (text !== t.text || note !== (t.note || "")) await updateDoc(todoRef(t.id), { text, note }).catch(() => {});
     else renderTodos();
   };
-  input.addEventListener("keydown", (e) => {
+  const onKey = (e) => {
     if (e.key === "Enter") { e.preventDefault(); save(); }
     else if (e.key === "Escape") { finished = true; renderTodos(); }
-  });
-  input.addEventListener("blur", save);
+  };
+  inText.addEventListener("keydown", onKey);
+  inNote.addEventListener("keydown", onKey);
+  box.addEventListener("focusout", () => { setTimeout(() => { if (!box.contains(document.activeElement)) save(); }, 0); });
 }
 
 function deleteTodo(t) {
-  const data = { text: t.text, done: !!t.done, order: t.order, createdAt: t.createdAt || serverTimestamp(), createdBy: t.createdBy || currentUser.uid };
+  const data = { text: t.text, note: t.note || "", done: !!t.done, order: t.order, createdAt: t.createdAt || serverTimestamp(), createdBy: t.createdBy || currentUser.uid, createdByEmail: t.createdByEmail || "" };
+  if (t.doneBy) { data.doneBy = t.doneBy; data.doneByEmail = t.doneByEmail || ""; }
   const id = t.id, sid = spaceId, lid = activeListId;
   deleteDoc(doc(db, "spaces", sid, "lists", lid, "todos", id)).catch(() => {});
   showSnackbar("Görev silindi", async () => {
@@ -431,6 +515,7 @@ $("btn-refresh").addEventListener("click", () => {
   manualResync();
   setTimeout(() => b.classList.remove("spinning"), 700);
 });
+$("completed-header").addEventListener("click", () => { completedCollapsed = !completedCollapsed; renderTodos(); });
 
 function openModal({ title, bodyHTML, okText = "Tamam", okDanger = false, onOk, showCancel = true }) {
   $("modal-title").textContent = title;
@@ -474,20 +559,24 @@ $("btn-new-list").addEventListener("click", () => {
   closeDrawer();
   openModal({
     title: "Yeni liste",
-    bodyHTML: '<input id="m-listname" type="text" placeholder="Liste adı (ör. Alışveriş)" />',
+    bodyHTML: `<input id="m-listname" type="text" placeholder="Liste adı (ör. Alışveriş)" />
+      <div class="emoji-label">Simge (isteğe bağlı)</div>
+      <div id="m-emoji" class="emoji-grid" data-selected="">${emojiGridHTML("")}</div>`,
     okText: "Oluştur",
     onOk: async () => {
       const name = $("m-listname").value.trim();
       if (!name) return false;
       if (!spaceId) { modalError("Alan hazırlanıyor, bir saniye…"); return false; }
+      const emoji = $("m-emoji").dataset.selected || "";
       const ref = await addDoc(collection(db, "spaces", spaceId, "lists"),
-        { title: name, createdAt: serverTimestamp(), createdBy: currentUser.uid }).catch(() => null);
+        { title: name, emoji, createdAt: serverTimestamp(), createdBy: currentUser.uid }).catch(() => null);
       if (!ref) { modalError("Oluşturulamadı. İnternetini kontrol et."); return false; }
-      lists.set(ref.id, { id: ref.id, title: name, createdBy: currentUser.uid }); // anlık göster
+      lists.set(ref.id, { id: ref.id, title: name, emoji, createdBy: currentUser.uid }); // anlık göster
       setActiveList(ref.id);
       renderLists(); updateEmptyStates();
     }
   });
+  wireEmojiGrid();
 });
 
 /* ---- Eşini davet et (kod göster) ---- */
@@ -586,15 +675,19 @@ $("mi-rename").addEventListener("click", () => {
   closeMenu();
   const l = lists.get(activeListId);
   openModal({
-    title: "Başlığı değiştir",
-    bodyHTML: `<input id="m-rename" type="text" value="${escapeAttr(l?.title || "")}" />`,
+    title: "Listeyi düzenle",
+    bodyHTML: `<input id="m-rename" type="text" value="${escapeAttr(l?.title || "")}" />
+      <div class="emoji-label">Simge</div>
+      <div id="m-emoji" class="emoji-grid" data-selected="${escapeAttr(l?.emoji || "")}">${emojiGridHTML(l?.emoji || "")}</div>`,
     okText: "Kaydet",
     onOk: async () => {
       const val = $("m-rename").value.trim();
       if (!val) return false;
-      await updateDoc(doc(db, "spaces", spaceId, "lists", activeListId), { title: val }).catch(() => {});
+      const emoji = $("m-emoji").dataset.selected || "";
+      await updateDoc(doc(db, "spaces", spaceId, "lists", activeListId), { title: val, emoji }).catch(() => {});
     }
   });
+  wireEmojiGrid();
 });
 $("list-title").addEventListener("click", () => { if (activeListId) $("mi-rename").click(); });
 

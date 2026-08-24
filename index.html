@@ -71,7 +71,12 @@
       </form>
 
       <main id="todo-scroll" class="todo-scroll">
+        <div id="counter-bar" class="counter-bar hidden"></div>
         <ul id="todo-list" class="todo-list"></ul>
+        <div id="completed-section" class="completed-section hidden">
+          <button id="completed-header" class="completed-header"></button>
+          <ul id="completed-list" class="todo-list"></ul>
+        </div>
         <div id="empty-state" class="empty-state hidden">
           <p>Henüz görev yok.</p>
           <p class="muted">Yukarıdan ilk görevini ekle.</p>
@@ -112,7 +117,7 @@
   <!-- Liste menüsü (sağ üst) -->
   <div id="menu-overlay" class="overlay hidden"></div>
   <div id="list-menu" class="popmenu hidden">
-    <button id="mi-rename" class="popmenu-item">Başlığı değiştir</button>
+    <button id="mi-rename" class="popmenu-item">Listeyi düzenle (ad/simge)</button>
     <button id="mi-clear-done" class="popmenu-item">Tamamlananları temizle</button>
     <button id="mi-delete-list" class="popmenu-item danger">Listeyi sil</button>
   </div>
