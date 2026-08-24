@@ -261,7 +261,7 @@ function startUserDoc() {
     const sp = data.spaces || {};
     for (const k in sp) userSpaces.set(k, sp[k]);
     // Migrasyon: harita yoksa ama aktif alan varsa geri doldur
-    if (Object.keys(sp).length === 0 && !migrating) { migrating = true; await backfillPointers().catch(() => {}); migrating = false; return; }
+    if (Object.keys(sp).length === 0 && !migrating) { migrating = true; await backfillPointers(data.spaceId).catch(() => {}); migrating = false; return; }
     spaceShared = !!(userSpaces.get(data.spaceId) && userSpaces.get(data.spaceId).shared);
     if (data.spaceId !== spaceId) switchToSpace(data.spaceId);
     else { renderSpaceSwitcher(); setConnStatus(memberCount); }
@@ -283,8 +283,7 @@ async function createPersonalSpace(makeActive) {
 }
 
 // Eski kullanıcılar için: mevcut alanı haritaya ekle; paylaşımlıysa ayrıca kişisel alan oluştur
-async function backfillPointers() {
-  const sid = spaceId;
+async function backfillPointers(sid) {
   if (!sid) return;
   let cnt = 1;
   try { cnt = (await getDocs(collection(db, "spaces", sid, "members"))).size; } catch {}
