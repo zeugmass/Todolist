@@ -270,6 +270,7 @@ function startUserDoc() {
     spaceShared = !!(userSpaces.get(data.spaceId) && userSpaces.get(data.spaceId).shared);
     if (data.spaceId !== spaceId) switchToSpace(data.spaceId);
     else { renderSpaceSwitcher(); setConnStatus(memberCount); }
+    healDuplicatePersonals();
   }, () => {});
 }
 
@@ -298,6 +299,41 @@ async function backfillPointers(sid) {
   batch.set(doc(db, "users", currentUser.uid), { spaces: { [sid]: { shared: isShared } } }, { merge: true });
   await batch.commit();
   if (isShared) await createPersonalSpace(false).catch(() => {}); // kişisel alan yok → oluştur
+}
+
+// Birden fazla "Kişisel" alan oluşmuşsa (eski taşıma/çift-cihaz kaynaklı),
+// BOŞ olan fazlalıkları temizle; dolu olanı (listesi olanı) koru.
+let healedPersonals = false;
+async function healDuplicatePersonals() {
+  if (healedPersonals) return;
+  const personals = [...userSpaces.entries()].filter(([, p]) => !p.shared).map(([id]) => id);
+  if (personals.length <= 1) { healedPersonals = true; return; }
+  healedPersonals = true;
+  const infos = [];
+  for (const sid of personals) {
+    let count = -1;
+    try { count = (await getDocs(collection(db, "spaces", sid, "lists"))).size; } catch { count = -1; }
+    infos.push({ sid, count });
+  }
+  const withLists = infos.filter((i) => i.count > 0).map((i) => i.sid);
+  const keep = new Set(withLists.length ? withLists : [personals.includes(spaceId) ? spaceId : personals[0]]);
+  const remove = infos.filter((i) => i.count === 0 && !keep.has(i.sid)); // sadece BOŞ ve korunmayanlar
+  if (!remove.length) return;
+  if (remove.some((r) => r.sid === spaceId)) switchActiveSpace([...keep][0]);
+  for (const r of remove) {
+    try {
+      const sd = (await getDoc(doc(db, "spaces", r.sid))).data();
+      const batch = writeBatch(db);
+      batch.delete(doc(db, "spaces", r.sid, "members", currentUser.uid));
+      if (sd && sd.inviteCode) batch.delete(doc(db, "invites", sd.inviteCode));
+      batch.delete(doc(db, "spaces", r.sid));
+      batch.update(doc(db, "users", currentUser.uid), { ["spaces." + r.sid]: deleteField() });
+      await batch.commit();
+      userSpaces.delete(r.sid);
+      dbg("fazla kişisel alan temizlendi: " + r.sid.slice(0, 6));
+    } catch (e) { dbg("heal HATA: " + (e.code || e.message)); }
+  }
+  renderSpaceSwitcher();
 }
 
 // Paylaşımlı alanı garanti et (davet için); yoksa oluştur ve ona geç
