@@ -9,7 +9,10 @@ import {
   onSnapshot, query, orderBy, serverTimestamp, writeBatch, increment, deleteField, arrayUnion
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { getMessaging, getToken, onMessage, isSupported } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging.js";
-import { firebaseConfig, VAPID_KEY } from "./firebase-config.js";
+import { firebaseConfig } from "./firebase-config.js";
+
+// Web Push (bildirim) genel anahtarı — gizli değildir.
+const VAPID_KEY = "BGqR76axu5G6VDL1SxXPF4MMDfkF1vzHgGBe8rvr9n01Q0Gl-t3w4jXEtlqDn4wNGI22K1LKHOyvyKPl9mH5-ls";
 
 /* ---------- Firebase ---------- */
 const app = initializeApp(firebaseConfig);
