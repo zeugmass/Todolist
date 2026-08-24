@@ -6,7 +6,7 @@ import {
 import {
   initializeFirestore, persistentLocalCache, persistentSingleTabManager,
   collection, doc, addDoc, setDoc, updateDoc, deleteDoc, getDoc, getDocs,
-  onSnapshot, query, orderBy, serverTimestamp, writeBatch, increment
+  onSnapshot, query, orderBy, serverTimestamp, writeBatch, increment, deleteField
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig } from "./firebase-config.js";
 
@@ -152,9 +152,14 @@ let suggestions = [];
 let currentUser = null;
 let userDocUnsub = null;
 let creatingSpace = false;
+let migrating = false;
 
-let spaceId = null;          // aktif ortak alan
-let spaceData = null;        // { ownerUid, inviteCode }
+let userSpaces = new Map();  // spaceId -> { shared }
+let userSpacesUnsub = null;
+let spaceShared = false;     // aktif alan ortak mı?
+
+let spaceId = null;          // aktif alan
+let spaceData = null;        // { ownerUid, inviteCode, shared }
 let spaceDocUnsub = null;
 let membersUnsub = null;
 let listsUnsub = null;
@@ -248,23 +253,87 @@ function startUserDoc() {
   userDocUnsub = onSnapshot(doc(db, "users", currentUser.uid), async (snap) => {
     const data = snap.data();
     if (!data || !data.spaceId) {
-      if (!creatingSpace) { creatingSpace = true; await createPersonalSpace().catch(() => {}); creatingSpace = false; }
+      if (!creatingSpace) { creatingSpace = true; await createPersonalSpace(true).catch(() => {}); creatingSpace = false; }
       return;
     }
+    // Alan listesini kullanıcı belgesindeki "spaces" haritasından türet
+    userSpaces.clear();
+    const sp = data.spaces || {};
+    for (const k in sp) userSpaces.set(k, sp[k]);
+    // Migrasyon: harita yoksa ama aktif alan varsa geri doldur
+    if (Object.keys(sp).length === 0 && !migrating) { migrating = true; await backfillPointers().catch(() => {}); migrating = false; return; }
+    spaceShared = !!(userSpaces.get(data.spaceId) && userSpaces.get(data.spaceId).shared);
     if (data.spaceId !== spaceId) switchToSpace(data.spaceId);
+    else { renderSpaceSwitcher(); setConnStatus(memberCount); }
   }, () => {});
 }
 
-async function createPersonalSpace() {
+async function createPersonalSpace(makeActive) {
   const spaceRef = doc(collection(db, "spaces"));
   const sid = spaceRef.id;
   const code = genCode();
   const batch = writeBatch(db);
-  batch.set(spaceRef, { ownerUid: currentUser.uid, inviteCode: code, createdAt: serverTimestamp() });
+  batch.set(spaceRef, { ownerUid: currentUser.uid, inviteCode: code, shared: false, createdAt: serverTimestamp() });
   batch.set(doc(db, "spaces", sid, "members", currentUser.uid), { email: currentUser.email || "", joinedAt: serverTimestamp() });
   batch.set(doc(db, "invites", code), { spaceId: sid, createdAt: serverTimestamp() });
-  batch.set(doc(db, "users", currentUser.uid), { spaceId: sid, email: currentUser.email || "" });
+  const userData = { email: currentUser.email || "", spaces: { [sid]: { shared: false } } };
+  if (makeActive) userData.spaceId = sid;
+  batch.set(doc(db, "users", currentUser.uid), userData, { merge: true });
   await batch.commit();
+}
+
+// Eski kullanıcılar için: mevcut alanı haritaya ekle; paylaşımlıysa ayrıca kişisel alan oluştur
+async function backfillPointers() {
+  const sid = spaceId;
+  if (!sid) return;
+  let cnt = 1;
+  try { cnt = (await getDocs(collection(db, "spaces", sid, "members"))).size; } catch {}
+  const isShared = cnt > 1;
+  const batch = writeBatch(db);
+  batch.set(doc(db, "spaces", sid), { shared: isShared }, { merge: true });
+  batch.set(doc(db, "users", currentUser.uid), { spaces: { [sid]: { shared: isShared } } }, { merge: true });
+  await batch.commit();
+  if (isShared) await createPersonalSpace(false).catch(() => {}); // kişisel alan yok → oluştur
+}
+
+// Paylaşımlı alanı garanti et (davet için); yoksa oluştur ve ona geç
+async function ensureSharedSpace() {
+  const spaceRef = doc(collection(db, "spaces"));
+  const sid = spaceRef.id;
+  const code = genCode();
+  const batch = writeBatch(db);
+  batch.set(spaceRef, { ownerUid: currentUser.uid, inviteCode: code, shared: true, createdAt: serverTimestamp() });
+  batch.set(doc(db, "spaces", sid, "members", currentUser.uid), { email: currentUser.email || "", joinedAt: serverTimestamp() });
+  batch.set(doc(db, "invites", code), { spaceId: sid, createdAt: serverTimestamp() });
+  batch.set(doc(db, "users", currentUser.uid), { spaceId: sid, spaces: { [sid]: { shared: true } } }, { merge: true });
+  await batch.commit();
+  switchToSpace(sid);
+  return { sid, code };
+}
+
+async function switchActiveSpace(sid) {
+  closeDrawer();
+  if (sid === spaceId) return;
+  spaceShared = !!(userSpaces.get(sid) && userSpaces.get(sid).shared);
+  switchToSpace(sid); // anlık
+  updateDoc(doc(db, "users", currentUser.uid), { spaceId: sid }).catch(() => {});
+}
+
+function renderSpaceSwitcher() {
+  const box = $("space-switcher");
+  const ids = [...userSpaces.keys()];
+  if (ids.length <= 1) { box.classList.add("hidden"); box.innerHTML = ""; return; }
+  ids.sort((a, b) => (userSpaces.get(a).shared ? 1 : 0) - (userSpaces.get(b).shared ? 1 : 0));
+  box.innerHTML = "";
+  ids.forEach((sid) => {
+    const p = userSpaces.get(sid);
+    const btn = document.createElement("button");
+    btn.className = "space-tab" + (sid === spaceId ? " active" : "");
+    btn.textContent = p.shared ? "🔗 Ortak" : "🔒 Kişisel";
+    btn.addEventListener("click", () => switchActiveSpace(sid));
+    box.appendChild(btn);
+  });
+  box.classList.remove("hidden");
 }
 
 function switchToSpace(newSpaceId) {
@@ -280,7 +349,9 @@ function switchToSpace(newSpaceId) {
   setConnStatus(1); // yeni alan varsayılan: yalnız
 
   spaceId = newSpaceId;
+  spaceShared = !!(userSpaces.get(spaceId) && userSpaces.get(spaceId).shared);
   activeListId = localStorage.getItem("active:" + spaceId) || null;
+  renderSpaceSwitcher();
   establishSpaceListeners();
 }
 
@@ -309,6 +380,7 @@ function establishSpaceListeners() {
   let firstLists = true;
   const q = query(collection(db, "spaces", spaceId, "lists"), orderBy("createdAt"));
   listsUnsub = onSnapshot(q, (snap) => {
+    resyncAttempts = 0; // başarılı → sayaç sıfırla
     if (firstLists) { dbg(`ilk liste anlık geldi ${ms(tSub)} (önbellek:${snap.metadata.fromCache}, adet:${snap.size})`); firstLists = false; }
     else dbg(`liste güncellendi (önbellek:${snap.metadata.fromCache}, adet:${snap.size})`);
     lists.clear();
@@ -329,7 +401,10 @@ function establishSpaceListeners() {
 
 // Hata sonrası otomatik yeniden bağlanma (sessiz ölmeyi engeller)
 let resyncTimer = null;
+let resyncAttempts = 0;
 function scheduleResync(reason) {
+  if (resyncAttempts >= 5) { dbg("yeniden bağlanma durduruldu (çok hata): " + reason); return; }
+  resyncAttempts++;
   dbg("otomatik yeniden bağlanma: " + reason);
   clearTimeout(resyncTimer);
   resyncTimer = setTimeout(() => { if (spaceId) { establishSpaceListeners(); subscribeTodos(activeListId); } }, 1500);
@@ -361,11 +436,11 @@ function renderHeader() {
 
 // Bağlantı durumu: 1 kişi = yalnız (buton gizli), 2+ = eşinle bağlı (buton görünür)
 function setConnStatus(count) {
-  const linked = count > 1;
-  $("btn-disconnect").classList.toggle("hidden", !linked);
+  $("btn-disconnect").classList.toggle("hidden", !spaceShared);
   const s = $("conn-status");
-  s.textContent = linked ? `🔗 Eşinle bağlı (${count} kişi)` : "Yalnız kullanım";
-  s.classList.toggle("linked", linked);
+  if (spaceShared) s.textContent = count > 1 ? `🔗 Eşinle bağlı (${count} kişi)` : "🔗 Ortak alan — eşin henüz katılmadı";
+  else s.textContent = "🔒 Kişisel alan (yalnız sen)";
+  s.classList.toggle("linked", spaceShared);
   if (count !== memberCount) { memberCount = count; if (spaceId) renderTodos(); }
 }
 
@@ -740,12 +815,18 @@ $("btn-new-list").addEventListener("click", () => {
 });
 
 /* ---- Eşini davet et (kod göster) ---- */
-$("btn-invite").addEventListener("click", () => {
+$("btn-invite").addEventListener("click", async () => {
   closeDrawer();
-  const code = spaceData?.inviteCode || "…";
+  // Paylaşımlı (Ortak) alanı garanti et — Kişisel alanı asla paylaşma
+  let sid = null, code = null;
+  for (const [id, p] of userSpaces) if (p.shared) { sid = id; break; }
+  if (!sid) { const r = await ensureSharedSpace().catch(() => null); if (r) { sid = r.sid; code = r.code; } }
+  else if (sid !== spaceId) await switchActiveSpace(sid);
+  if (!code && sid) { try { code = (await getDoc(doc(db, "spaces", sid))).data()?.inviteCode; } catch {} }
+  code = code || spaceData?.inviteCode || "…";
   openModal({
     title: "Eşini davet et",
-    bodyHTML: `<div class="invite-code" id="m-invite">${code}</div><p class="hint">Bu kodu eşine gönder. O da uygulamada <b>“Listeye katıl”</b> deyip bu kodu girsin. Bağlandıktan sonra <b>tüm listeleriniz</b> ikinizde de anlık görünür.</p>`,
+    bodyHTML: `<div class="invite-code" id="m-invite">${code}</div><p class="hint">Bu kod <b>Ortak</b> alan içindir. Eşin <b>“Listeye katıl”</b> deyip bu kodu girsin. Bağlandıktan sonra Ortak alandaki listeler ikinizde anlık görünür. <b>Kişisel alanın</b> özel kalır, eşin göremez.</p>`,
     okText: "Kopyala",
     onOk: async (btn) => {
       try { await navigator.clipboard.writeText(code); btn.textContent = "Kopyalandı ✓"; }
@@ -760,7 +841,7 @@ $("btn-join-list").addEventListener("click", () => {
   closeDrawer();
   openModal({
     title: "Listeye katıl",
-    bodyHTML: '<input id="m-code" type="text" autocapitalize="characters" placeholder="Davet kodu" style="text-transform:uppercase;letter-spacing:3px;text-align:center;font-size:22px" /><p class="hint">Eşinden aldığın kodu gir. Katılınca onun tüm listelerini görürsün. (Kendi mevcut listelerin, sen tekrar kendi alanına dönene kadar görünmez olur.)</p>',
+    bodyHTML: '<input id="m-code" type="text" autocapitalize="characters" placeholder="Davet kodu" style="text-transform:uppercase;letter-spacing:3px;text-align:center;font-size:22px" /><p class="hint">Eşinden aldığın kodu gir. Ortak alana katılırsın. <b>Kişisel alanın durmaya devam eder</b> — üstteki geçişten her ikisine erişebilirsin.</p>',
     okText: "Katıl",
     onOk: async (btn) => {
       const code = $("m-code").value.trim().toUpperCase();
@@ -781,11 +862,11 @@ async function joinSpace(code) {
     dbg(`katıl: kod arandı ${ms(tGet)} (bulundu:${inv.exists()})`);
     if (!inv.exists()) return "Kod bulunamadı. Kontrol et.";
     const newSpaceId = inv.data().spaceId;
-    if (newSpaceId === spaceId) return "Zaten bu alandasınız.";
+    if (userSpaces.has(newSpaceId)) { switchActiveSpace(newSpaceId); return null; }
     const batch = writeBatch(db);
     batch.set(doc(db, "spaces", newSpaceId, "members", currentUser.uid), { email: currentUser.email || "", joinedAt: serverTimestamp() });
-    batch.update(doc(db, "users", currentUser.uid), { spaceId: newSpaceId });
-    if (spaceId) batch.delete(doc(db, "spaces", spaceId, "members", currentUser.uid));
+    batch.set(doc(db, "users", currentUser.uid), { spaceId: newSpaceId, spaces: { [newSpaceId]: { shared: true } } }, { merge: true });
+    // Kişisel alan silinmez; üstteki geçişten erişilir
     const tCommit = performance.now();
     await batch.commit();
     dbg(`katıl: yazıldı ${ms(tCommit)}`);
@@ -802,7 +883,7 @@ $("btn-disconnect").addEventListener("click", () => {
   closeDrawer();
   openModal({
     title: "Bağlantıyı kes",
-    bodyHTML: '<p class="hint">Ortak alandan ayrılıp kendine ait yeni, boş bir alana geçeceksin. Eşin kendi alanında listeleri görmeye devam eder. Tekrar bağlanmak için yeniden davet kodu girmen gerekir.</p>',
+    bodyHTML: '<p class="hint">Ortak alandan ayrılıp <b>Kişisel alanına</b> döneceksin. Eşin Ortak alandaki listeleri görmeye devam eder. Tekrar bağlanmak için yeniden davet kodu girmen gerekir.</p>',
     okText: "Bağlantıyı kes", okDanger: true,
     onOk: async () => {
       const ok = await disconnectSpace();
@@ -813,19 +894,26 @@ $("btn-disconnect").addEventListener("click", () => {
 
 async function disconnectSpace() {
   try {
-    const spaceRef = doc(collection(db, "spaces"));
-    const sid = spaceRef.id;
-    const code = genCode();
+    const leaving = spaceId;
+    // mevcut kişisel alanı bul
+    let personal = null;
+    for (const [sid, p] of userSpaces) if (!p.shared && sid !== leaving) { personal = sid; break; }
     const batch = writeBatch(db);
-    batch.set(spaceRef, { ownerUid: currentUser.uid, inviteCode: code, createdAt: serverTimestamp() });
-    batch.set(doc(db, "spaces", sid, "members", currentUser.uid), { email: currentUser.email || "", joinedAt: serverTimestamp() });
-    batch.set(doc(db, "invites", code), { spaceId: sid, createdAt: serverTimestamp() });
-    batch.update(doc(db, "users", currentUser.uid), { spaceId: sid });
-    if (spaceId) batch.delete(doc(db, "spaces", spaceId, "members", currentUser.uid));
-    const tCommit = performance.now();
+    batch.delete(doc(db, "spaces", leaving, "members", currentUser.uid));
+    const userUpd = { spaceId: null, ["spaces." + leaving]: deleteField() };
+    if (!personal) { // kişisel alan yoksa oluştur
+      const sr = doc(collection(db, "spaces")); personal = sr.id; const code = genCode();
+      batch.set(sr, { ownerUid: currentUser.uid, inviteCode: code, shared: false, createdAt: serverTimestamp() });
+      batch.set(doc(db, "spaces", personal, "members", currentUser.uid), { email: currentUser.email || "", joinedAt: serverTimestamp() });
+      batch.set(doc(db, "invites", code), { spaceId: personal, createdAt: serverTimestamp() });
+      userUpd["spaces." + personal] = { shared: false };
+    }
+    userUpd.spaceId = personal;
+    batch.update(doc(db, "users", currentUser.uid), userUpd);
     await batch.commit();
-    dbg(`bağlantı kesildi, yazıldı ${ms(tCommit)}`);
-    switchToSpace(sid); // anlık: snapshot'ı bekleme
+    dbg("bağlantı kesildi → kişisel alan");
+    userSpaces.delete(leaving);
+    switchToSpace(personal); // anlık
     return true;
   } catch (e) { dbg("bağlantı kes HATA: " + (e.code || e.message)); return false; }
 }
@@ -911,6 +999,8 @@ function toast(text) {
 ================================================================ */
 function cleanupAll() {
   if (userDocUnsub) { userDocUnsub(); userDocUnsub = null; }
+  if (userSpacesUnsub) { userSpacesUnsub(); userSpacesUnsub = null; }
+  userSpaces.clear(); spaceShared = false;
   if (spaceDocUnsub) { spaceDocUnsub(); spaceDocUnsub = null; }
   if (membersUnsub) { membersUnsub(); membersUnsub = null; }
   if (listsUnsub) { listsUnsub(); listsUnsub = null; }

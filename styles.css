@@ -223,6 +223,9 @@ input:focus { border-color: var(--accent); }
 }
 .drawer.open { transform: translateX(0); }
 .drawer-head { display: flex; align-items: center; justify-content: space-between; padding: 6px 14px 12px; font-weight: 600; font-size: 17px; border-bottom: 1px solid var(--border); }
+.space-switcher { display: flex; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.space-tab { flex: 1; padding: 10px 6px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); color: var(--muted); font-weight: 600; font-size: 14px; }
+.space-tab.active { border-color: var(--accent); background: var(--surface-2); color: var(--text); }
 .lists-ul { list-style: none; margin: 0; padding: 6px; flex: 1; overflow-y: auto; }
 .list-row {
   display: flex; align-items: center; gap: 10px; padding: 13px 12px; border-radius: 10px;
