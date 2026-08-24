@@ -11,7 +11,7 @@ initializeApp();
 const db = getFirestore();
 
 exports.sendReminders = onSchedule(
-  { schedule: "every 5 minutes", timeZone: "Europe/Istanbul", region: "europe-west1" },
+  { schedule: "every 1 minutes", timeZone: "Europe/Istanbul", region: "europe-west1" },
   async () => {
     const now = Date.now();
     const windowStart = now - 30 * 60 * 1000; // son 30 dk (gecikmeleri de yakala)
