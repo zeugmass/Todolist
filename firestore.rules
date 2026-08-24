@@ -38,6 +38,11 @@ service cloud.firestore {
         allow update: if false;
       }
 
+      // Sık eklenenler (otomatik tamamlama)
+      match /frequent/{key} {
+        allow read, write: if isMember();
+      }
+
       // Listeler ve görevler: yalnızca alan üyeleri
       match /lists/{listId} {
         allow read, write: if isMember();

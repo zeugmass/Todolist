@@ -167,6 +167,26 @@ input:focus { border-color: var(--accent); }
 }
 .completed-header:active { background: var(--surface-2); }
 
+/* Görev meta: not + son tarih + tekrar */
+.todo-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.due-pill { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--surface-2); color: var(--muted); white-space: nowrap; }
+.due-pill.today { background: var(--accent); color: var(--accent-contrast); font-weight: 600; }
+.due-pill.overdue { background: rgba(208,43,43,.16); color: var(--danger); font-weight: 600; }
+.repeat-badge { font-size: 12px; color: var(--muted); white-space: nowrap; }
+
+/* Otomatik tamamlama önerileri */
+.suggest-box { max-height: 42vh; overflow-y: auto; background: var(--surface); border-bottom: 1px solid var(--border); }
+.suggest-item { display: flex; align-items: center; gap: 10px; padding: 13px 14px; border-bottom: 1px solid var(--border); }
+.suggest-item:active { background: var(--surface-2); }
+.suggest-item .s-plus { color: var(--muted); font-weight: 700; }
+
+/* Görev düzenleme penceresi alanları */
+#modal-body select, #modal-body input[type="datetime-local"] {
+  width: 100%; padding: 13px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); color: var(--text); font-size: 16px; margin-bottom: 8px;
+}
+.field-label { font-size: 13px; color: var(--muted); margin: 10px 0 6px; }
+
 /* Emoji seçici */
 .emoji-label { font-size: 13px; color: var(--muted); margin: 12px 0 6px; }
 .emoji-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; }

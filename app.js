@@ -6,7 +6,7 @@ import {
 import {
   initializeFirestore, persistentLocalCache, persistentSingleTabManager,
   collection, doc, addDoc, setDoc, updateDoc, deleteDoc, getDoc, getDocs,
-  onSnapshot, query, orderBy, serverTimestamp, writeBatch
+  onSnapshot, query, orderBy, serverTimestamp, writeBatch, increment
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig } from "./firebase-config.js";
 
@@ -66,6 +66,52 @@ function emojiGridHTML(selected) {
   return LIST_EMOJIS.map((e) => `<button type="button" class="emoji-opt${selected === e ? " sel" : ""}" data-e="${e}">${e}</button>`).join("");
 }
 
+/* ---------- Tarih / tekrar yardımcıları ---------- */
+const REPEAT_OPTS = [["", "Tekrar yok"], ["daily", "Her gün"], ["weekdays", "Hafta içi (Pzt-Cum)"], ["weekly", "Her hafta"], ["monthly", "Her ay"]];
+const REPEAT_LABEL = { daily: "Her gün", weekdays: "Hafta içi", weekly: "Her hafta", monthly: "Her ay" };
+const AY = ["Oca", "Şub", "Mar", "Nis", "May", "Haz", "Tem", "Ağu", "Eyl", "Eki", "Kas", "Ara"];
+
+function formatDue(msv) {
+  if (!msv) return null;
+  const d = new Date(msv), now = new Date();
+  const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const startDue = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const dayDiff = Math.round((startDue - startToday) / 86400000);
+  const hasTime = d.getHours() || d.getMinutes();
+  const hm = hasTime ? ` ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}` : "";
+  let label;
+  if (dayDiff === 0) label = "Bugün" + hm;
+  else if (dayDiff === 1) label = "Yarın" + hm;
+  else if (dayDiff === -1) label = "Dün" + hm;
+  else label = `${d.getDate()} ${AY[d.getMonth()]}` + hm;
+  let cls = "upcoming";
+  if (msv < now.getTime()) { cls = "overdue"; if (dayDiff !== 0) label = "⚠ " + label; }
+  else if (dayDiff === 0) cls = "today";
+  return { label, cls };
+}
+function nextDue(msv, repeat) {
+  let d = new Date(msv || Date.now());
+  const bump = () => {
+    if (repeat === "weekly") d.setDate(d.getDate() + 7);
+    else if (repeat === "monthly") d.setMonth(d.getMonth() + 1);
+    else if (repeat === "weekdays") { do { d.setDate(d.getDate() + 1); } while (d.getDay() === 0 || d.getDay() === 6); }
+    else d.setDate(d.getDate() + 1); // daily
+  };
+  bump();
+  let guard = 0;
+  while (d.getTime() <= Date.now() && guard++ < 500) bump();
+  return d.getTime();
+}
+function msToLocalInput(msv) {
+  if (!msv) return "";
+  const d = new Date(msv - new Date().getTimezoneOffset() * 60000);
+  return d.toISOString().slice(0, 16);
+}
+function localInputToMs(v) { return v ? new Date(v).getTime() : 0; }
+function freqKey(text) { return text.trim().toLocaleLowerCase("tr").replace(/[\/#.\[\]$]/g, "_").slice(0, 120); }
+
+let suggestions = [];
+
 /* ---------- Durum ---------- */
 let currentUser = null;
 let userDocUnsub = null;
@@ -76,6 +122,7 @@ let spaceData = null;        // { ownerUid, inviteCode }
 let spaceDocUnsub = null;
 let membersUnsub = null;
 let listsUnsub = null;
+let frequentUnsub = null;
 const lists = new Map();     // listId -> { title, createdAt, ... }
 let activeListId = null;
 
@@ -190,8 +237,9 @@ function switchToSpace(newSpaceId) {
   if (spaceDocUnsub) { spaceDocUnsub(); spaceDocUnsub = null; }
   if (membersUnsub) { membersUnsub(); membersUnsub = null; }
   if (listsUnsub) { listsUnsub(); listsUnsub = null; }
+  if (frequentUnsub) { frequentUnsub(); frequentUnsub = null; }
   if (todosUnsub) { todosUnsub(); todosUnsub = null; }
-  lists.clear(); currentTodos = []; spaceData = null;
+  lists.clear(); currentTodos = []; spaceData = null; suggestions = [];
   $("todo-list").innerHTML = ""; $("lists-ul").innerHTML = "";
   setConnStatus(1); // yeni alan varsayılan: yalnız
 
@@ -206,10 +254,16 @@ function establishSpaceListeners() {
   if (spaceDocUnsub) { spaceDocUnsub(); spaceDocUnsub = null; }
   if (membersUnsub) { membersUnsub(); membersUnsub = null; }
   if (listsUnsub) { listsUnsub(); listsUnsub = null; }
+  if (frequentUnsub) { frequentUnsub(); frequentUnsub = null; }
 
   spaceDocUnsub = onSnapshot(doc(db, "spaces", spaceId),
     (d) => { spaceData = d.exists() ? d.data() : null; },
     (e) => scheduleResync("alan " + (e.code || "")));
+
+  // sık eklenenler (otomatik tamamlama önerileri)
+  frequentUnsub = onSnapshot(query(collection(db, "spaces", spaceId, "frequent"), orderBy("count", "desc")),
+    (snap) => { suggestions = []; snap.forEach((d) => suggestions.push(d.data())); },
+    () => {});
 
   membersUnsub = onSnapshot(collection(db, "spaces", spaceId, "members"),
     (snap) => setConnStatus(snap.size),
@@ -376,11 +430,15 @@ function todoRow(t) {
   span.className = "todo-text";
   span.textContent = t.text;
   wrap.appendChild(span);
-  if (t.note) {
-    const note = document.createElement("span");
-    note.className = "todo-note";
-    note.textContent = t.note;
-    wrap.appendChild(note);
+
+  const due = t.done ? null : formatDue(t.dueAt);
+  if (t.note || due || t.repeat) {
+    const meta = document.createElement("div");
+    meta.className = "todo-meta";
+    if (t.note) { const n = document.createElement("span"); n.className = "todo-note"; n.textContent = t.note; meta.appendChild(n); }
+    if (due) { const p = document.createElement("span"); p.className = "due-pill " + due.cls; p.textContent = due.label; meta.appendChild(p); }
+    if (t.repeat) { const r = document.createElement("span"); r.className = "repeat-badge"; r.textContent = "🔁 " + (REPEAT_LABEL[t.repeat] || ""); meta.appendChild(r); }
+    wrap.appendChild(meta);
   }
   wrap.addEventListener("click", () => toggleTodo(t));
 
@@ -404,7 +462,7 @@ function todoRow(t) {
   edit.className = "row-del";
   edit.setAttribute("aria-label", "Düzenle");
   edit.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18"><path d="M4 20h4L18.5 9.5a2 2 0 0 0 0-2.8l-1.2-1.2a2 2 0 0 0-2.8 0L4 16v4z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>';
-  edit.addEventListener("click", (e) => { e.stopPropagation(); startEdit(li, t); });
+  edit.addEventListener("click", (e) => { e.stopPropagation(); openTodoEditor(t); });
 
   const del = document.createElement("button");
   del.className = "row-del";
@@ -422,55 +480,55 @@ async function addTodo(text) {
   if (!activeListId) return;
   const col = collection(db, "spaces", spaceId, "lists", activeListId, "todos");
   await addDoc(col, { text, note: "", done: false, order: Date.now(), createdAt: serverTimestamp(), createdBy: currentUser.uid, createdByEmail: currentUser.email || "" }).catch(() => {});
+  // sık eklenenler sayacını artır (öneriler için)
+  const key = freqKey(text);
+  if (key) setDoc(doc(db, "spaces", spaceId, "frequent", key), { text, count: increment(1), lastUsed: serverTimestamp() }, { merge: true }).catch(() => {});
   const scroll = $("todo-scroll");
   requestAnimationFrame(() => { scroll.scrollTop = scroll.scrollHeight; });
 }
 
 function toggleTodo(t) {
   if (navigator.vibrate) navigator.vibrate(8);
+  // Tekrarlayan görev: tamamlayınca silinmez/işaretlenmez, bir sonraki tarihe atlar
+  if (!t.done && t.repeat) {
+    const next = nextDue(t.dueAt, t.repeat);
+    updateDoc(todoRef(t.id), { dueAt: next, done: false }).catch(() => {});
+    const f = formatDue(next);
+    toast("🔁 Tekrarlandı → " + (f ? f.label : ""));
+    return;
+  }
   const nowDone = !t.done;
   const upd = { done: nowDone };
   if (nowDone) { upd.doneBy = currentUser.uid; upd.doneByEmail = currentUser.email || ""; upd.doneAt = serverTimestamp(); }
   updateDoc(todoRef(t.id), upd).catch(() => {});
 }
 
-function startEdit(li, t) {
-  if (li.querySelector(".edit-box")) return;
-  const wrap = li.querySelector(".todo-text-wrap");
-  const box = document.createElement("div");
-  box.className = "edit-box";
-  const inText = document.createElement("input");
-  inText.className = "todo-edit";
-  inText.value = t.text;
-  const inNote = document.createElement("input");
-  inNote.className = "todo-edit note-edit";
-  inNote.placeholder = "Miktar / not (isteğe bağlı)";
-  inNote.value = t.note || "";
-  box.append(inText, inNote);
-  li.replaceChild(box, wrap);
-  inText.focus();
-  inText.setSelectionRange(inText.value.length, inText.value.length);
-
-  let finished = false;
-  const save = async () => {
-    if (finished) return; finished = true;
-    const text = inText.value.trim();
-    const note = inNote.value.trim();
-    if (!text) { renderTodos(); return; }
-    if (text !== t.text || note !== (t.note || "")) await updateDoc(todoRef(t.id), { text, note }).catch(() => {});
-    else renderTodos();
-  };
-  const onKey = (e) => {
-    if (e.key === "Enter") { e.preventDefault(); save(); }
-    else if (e.key === "Escape") { finished = true; renderTodos(); }
-  };
-  inText.addEventListener("keydown", onKey);
-  inNote.addEventListener("keydown", onKey);
-  box.addEventListener("focusout", () => { setTimeout(() => { if (!box.contains(document.activeElement)) save(); }, 0); });
+function openTodoEditor(t) {
+  const opts = REPEAT_OPTS.map(([v, l]) => `<option value="${v}"${(t.repeat || "") === v ? " selected" : ""}>${l}</option>`).join("");
+  openModal({
+    title: "Görevi düzenle",
+    bodyHTML: `<input id="e-text" type="text" value="${escapeAttr(t.text)}" placeholder="Görev" />
+      <input id="e-note" type="text" placeholder="Miktar / not (isteğe bağlı)" value="${escapeAttr(t.note || "")}" />
+      <div class="field-label">Son tarih (isteğe bağlı)</div>
+      <input id="e-due" type="datetime-local" value="${msToLocalInput(t.dueAt)}" />
+      <div class="field-label">Tekrar</div>
+      <select id="e-repeat">${opts}</select>`,
+    okText: "Kaydet",
+    onOk: async () => {
+      const text = $("e-text").value.trim();
+      if (!text) return false;
+      const note = $("e-note").value.trim();
+      const dueAt = localInputToMs($("e-due").value);
+      const repeat = $("e-repeat").value;
+      await updateDoc(todoRef(t.id), { text, note, dueAt, repeat }).catch(() => {});
+    }
+  });
 }
 
 function deleteTodo(t) {
   const data = { text: t.text, note: t.note || "", done: !!t.done, order: t.order, createdAt: t.createdAt || serverTimestamp(), createdBy: t.createdBy || currentUser.uid, createdByEmail: t.createdByEmail || "" };
+  if (t.dueAt) data.dueAt = t.dueAt;
+  if (t.repeat) data.repeat = t.repeat;
   if (t.doneBy) { data.doneBy = t.doneBy; data.doneByEmail = t.doneByEmail || ""; }
   const id = t.id, sid = spaceId, lid = activeListId;
   deleteDoc(doc(db, "spaces", sid, "lists", lid, "todos", id)).catch(() => {});
@@ -493,8 +551,35 @@ $("add-form").addEventListener("submit", (e) => {
   const text = input.value.trim();
   if (!text) return;
   input.value = "";
+  hideSuggest();
   addTodo(text);
 });
+
+/* Otomatik tamamlama (sık eklenenler) */
+function hideSuggest() { $("suggest-box").classList.add("hidden"); }
+function renderSuggestions() {
+  const box = $("suggest-box");
+  const qv = $("add-input").value.trim().toLocaleLowerCase("tr");
+  if (!qv) { hideSuggest(); return; }
+  const active = new Set(currentTodos.filter((t) => !t.done).map((t) => t.text.toLocaleLowerCase("tr")));
+  const matches = suggestions
+    .filter((s) => s.text && s.text.toLocaleLowerCase("tr").startsWith(qv) && s.text.toLocaleLowerCase("tr") !== qv && !active.has(s.text.toLocaleLowerCase("tr")))
+    .slice(0, 6);
+  if (matches.length === 0) { hideSuggest(); return; }
+  box.innerHTML = "";
+  matches.forEach((s) => {
+    const it = document.createElement("div");
+    it.className = "suggest-item";
+    it.innerHTML = `<span class="s-plus">+</span><span>${escapeHtml(s.text)}</span>`;
+    it.addEventListener("mousedown", (ev) => ev.preventDefault()); // input blur'ünü engelle
+    it.addEventListener("click", () => { addTodo(s.text); $("add-input").value = ""; hideSuggest(); $("add-input").focus(); });
+    box.appendChild(it);
+  });
+  box.classList.remove("hidden");
+}
+$("add-input").addEventListener("input", renderSuggestions);
+$("add-input").addEventListener("focus", renderSuggestions);
+$("add-input").addEventListener("blur", () => setTimeout(hideSuggest, 150));
 
 /* ================================================================
    ÇEKMECE + MENÜ + MODAL
@@ -754,6 +839,7 @@ function cleanupAll() {
   if (spaceDocUnsub) { spaceDocUnsub(); spaceDocUnsub = null; }
   if (membersUnsub) { membersUnsub(); membersUnsub = null; }
   if (listsUnsub) { listsUnsub(); listsUnsub = null; }
+  if (frequentUnsub) { frequentUnsub(); frequentUnsub = null; }
   if (todosUnsub) { todosUnsub(); todosUnsub = null; }
   if (sortable) { sortable.destroy(); sortable = null; }
   lists.clear(); currentTodos = []; spaceId = null; spaceData = null; activeListId = null;
