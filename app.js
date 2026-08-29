@@ -527,7 +527,6 @@ function subscribeTodos(listId) {
     snap.forEach((d) => currentTodos.push({ id: d.id, ...d.data() }));
     renderTodos();
     updateEmptyStates();
-    reArmRecurring();
   }, (e) => scheduleResync("görevler " + (e.code || "")));
 }
 
@@ -642,48 +641,15 @@ async function addTodo(text) {
 function toggleTodo(t) {
   if (navigator.vibrate) navigator.vibrate(8);
   // Tekrarlayan görev dahil: tıklama sadece "yapıldı"yı açar/kapatır (tarihi DEĞİŞTİRMEZ).
-  // Tarih ilerlemesi otomatik olarak reArmRecurring() ile, gün değişince olur.
+  // Gün-dönüşü ilerletmesi sunucuda (functions) yapılır.
   const nowDone = !t.done;
   const upd = { done: nowDone };
   if (nowDone) { upd.doneBy = currentUser.uid; upd.doneByEmail = currentUser.email || ""; upd.doneAt = serverTimestamp(); }
   updateDoc(todoRef(t.id), upd).catch(() => {});
 }
 
-// Tekrarlayan görevleri "bu günün occurrence'ına" hizala; geçmiş occurrence ise yeniden aktif et.
-function currentOccurrence(t, startToday) {
-  const base = new Date(t.dueAt);
-  const h = base.getHours(), m = base.getMinutes();
-  const start = new Date(startToday);
-  if (t.repeat === "weekly" || t.repeat === "weekdays") {
-    const days = (t.weekdays && t.weekdays.length) ? t.weekdays : [1, 2, 3, 4, 5];
-    for (let i = 0; i <= 13; i++) { const d = new Date(start); d.setDate(start.getDate() + i); d.setHours(h, m, 0, 0); if (days.includes(d.getDay())) return d.getTime(); }
-    return startToday;
-  }
-  if (t.repeat === "monthly") {
-    const dd = Math.min(base.getDate(), 28);
-    const d = new Date(start.getFullYear(), start.getMonth(), dd, h, m, 0, 0);
-    if (d.getTime() < startToday) d.setMonth(d.getMonth() + 1);
-    return d.getTime();
-  }
-  // daily
-  const d = new Date(start); d.setHours(h, m, 0, 0); return d.getTime();
-}
-function reArmRecurring() {
-  if (!spaceId || !activeListId) return;
-  const now = new Date();
-  const st = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  currentTodos.forEach((t) => {
-    if (!t.repeat || !t.dueAt) return;
-    const maxAhead = t.repeat === "monthly" ? 32 : (t.repeat === "weekly" || t.repeat === "weekdays") ? 8 : 2;
-    if (t.dueAt < st) {
-      // geçmiş gün → bugünün occurrence'ına çek ve yeniden aktif et
-      updateDoc(todoRef(t.id), { dueAt: currentOccurrence(t, st), done: false }).catch(() => {});
-    } else if (t.dueAt > st + maxAhead * 86400000) {
-      // eski buglardan hatalı biçimde çok ileri → düzelt (yapıldı durumuna dokunma)
-      updateDoc(todoRef(t.id), { dueAt: currentOccurrence(t, st) }).catch(() => {});
-    }
-  });
-}
+// NOT: Tekrarlayan görevlerin gün-dönüşü ilerletmesi artık SUNUCUDA (functions/index.js)
+// yapılıyor. Uygulama tarafında tarih yazma yok — bu, çift-cihaz yazma döngüsünü/kilitlenmeyi önler.
 
 function openTodoEditor(t) {
   const rep = t.repeat === "weekdays" ? "weekly" : (t.repeat || "");
