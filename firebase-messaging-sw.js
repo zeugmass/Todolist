@@ -11,11 +11,20 @@ firebase.initializeApp({
   appId: "1:899072386998:web:818683c7a623e0fcbc8317"
 });
 
-// firebase.messaging() çağrısı, gelen push'u FCM'in OTOMATİK göstermesini sağlar
-// (mesajda notification/webpush payload'ı var). Buraya AYRICA onBackgroundMessage +
-// showNotification EKLEMEYİN: iPhone aynı bildirimi İKİ kez gösterir (biri FCM
-// otomatik, biri elle). Çift bildirim tam bu yüzden oluyordu.
-firebase.messaging();
+// Sunucu SADECE "data" gönderiyor (notification payload YOK) — bu yüzden bildirimi
+// BURADA elle göstermek ZORUNLU. iOS'ta gösteren tek yer burasıdır; bu handler olmadan
+// hiç bildirim çıkmaz. Tek kaynak olduğu için de çift bildirim olmaz.
+const messaging = firebase.messaging();
+messaging.onBackgroundMessage((payload) => {
+  const d = payload.data || {};
+  self.registration.showNotification(d.title || "Görevler", {
+    body: d.body || "",
+    icon: "icon-192.png",
+    badge: "icon-192.png",
+    tag: d.tag || undefined,
+    data: { url: d.url || "./" }
+  });
+});
 
 // Bildirime tıklayınca uygulamayı aç
 self.addEventListener("notificationclick", (e) => {

@@ -90,16 +90,13 @@ exports.sendReminders = onSchedule(
       if (tokens.length) {
         const body = t.text + (t.note ? " — " + t.note : "");
         try {
-          // iOS için: görünür "notification" + "webpush" şart. Sadece "data"
-          // gönderilirse iPhone push'u sessiz sayıp GÖSTERMEZ.
+          // SADECE data gönderiyoruz; bildirimi service worker'daki onBackgroundMessage
+          // GÖSTERİYOR (tek kaynak = tek bildirim). "notification"/"webpush.notification"
+          // EKLEMEYİN: onları FCM ayrıca otomatik gösterir ve iPhone'da ÇİFT bildirim olur.
+          // Urgency:high, iOS'un push'u geciktirmeden iletmesi için.
           const resp = await getMessaging().sendEachForMulticast({
             tokens,
-            notification: { title: listTitle, body },
-            webpush: {
-              headers: { Urgency: "high", TTL: "3600" },
-              notification: { title: listTitle, body, icon: "icon-192.png", badge: "icon-192.png", tag: docSnap.id },
-              fcmOptions: { link: "./" }
-            },
+            webpush: { headers: { Urgency: "high", TTL: "3600" } },
             data: { title: listTitle, body, url: "./", tag: docSnap.id }
           });
           sent += resp.successCount;
