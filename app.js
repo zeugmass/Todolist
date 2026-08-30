@@ -238,6 +238,7 @@ onAuthStateChanged(auth, (user) => {
     hide($("screen-loading")); hide($("screen-auth"));
     show($("screen-main"));
     updateNotifButton();
+    refreshNotifOnLaunch(); // izin varsa jetonu sessizce tazele
     startUserDoc();
   } else {
     cleanupAll();
@@ -1062,12 +1063,34 @@ function escapeHtml(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "
    BİLDİRİMLER (Push / FCM)
 ================================================================ */
 const isStandalone = () => window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
+let fcmForegroundBound = false; // onMessage yalnız bir kez bağlansın
 
 function updateNotifButton() {
   const b = $("btn-notif");
   if (!b) return;
   const granted = ("Notification" in window) && Notification.permission === "granted";
   b.textContent = granted ? "🔔 Bildirimler açık" : "🔔 Bildirimleri aç";
+}
+
+// İzin verilmiş varsayılır; taze jetonu alıp Firestore'a yazar (tek cihaz = tek jeton,
+// ÜZERİNE YAZ → eski/ölü jetonlar birikmez, çift bildirim olmaz). silent=true iken UI mesajı yok.
+async function registerFcmToken(silent) {
+  if (!isStandalone()) { if (!silent) toast("Önce uygulamayı ana ekrana ekleyip oradan aç."); return false; }
+  if (!(await isSupported().catch(() => false))) { if (!silent) toast("Bu tarayıcı push desteklemiyor."); return false; }
+  const reg = await navigator.serviceWorker.register("firebase-messaging-sw.js");
+  const messaging = getMessaging(app);
+  const token = await getToken(messaging, { vapidKey: VAPID_KEY, serviceWorkerRegistration: reg });
+  if (!token || !currentUser) { if (!silent) toast("Bildirim jetonu alınamadı."); return false; }
+  dbg("fcm token" + (silent ? " (sessiz tazeleme)" : "") + ": " + token.slice(0, 12) + "…");
+  await setDoc(doc(db, "users", currentUser.uid), { fcmTokens: [token] }, { merge: true });
+  if (!fcmForegroundBound) {
+    fcmForegroundBound = true;
+    onMessage(messaging, (payload) => {
+      const d = payload.data || payload.notification || {};
+      toast("🔔 " + (d.title || "Bildirim") + (d.body ? " — " + d.body : ""));
+    });
+  }
+  return true;
 }
 
 async function enableNotifications() {
@@ -1077,24 +1100,19 @@ async function enableNotifications() {
   try { perm = await Notification.requestPermission(); } catch { toast("İzin istenemedi."); return; }
   if (perm !== "granted") { toast("Bildirim izni verilmedi."); return; }
   try {
-    if (!(await isSupported().catch(() => false))) { toast("Bu tarayıcı push desteklemiyor."); return; }
-    const reg = await navigator.serviceWorker.register("firebase-messaging-sw.js");
-    const messaging = getMessaging(app);
-    const token = await getToken(messaging, { vapidKey: VAPID_KEY, serviceWorkerRegistration: reg });
-    if (!token) { toast("Bildirim jetonu alınamadı."); return; }
-    dbg("fcm token alındı: " + token.slice(0, 12) + "…");
-    // Tek cihaz = tek jeton. Diziye eklemek yerine ÜZERİNE YAZ; böylece eski/ölü
-    // jetonlar birikmez ve aynı bildirim iPhone'a çift düşmez.
-    await setDoc(doc(db, "users", currentUser.uid), { fcmTokens: [token] }, { merge: true });
-    onMessage(messaging, (payload) => {
-      const d = payload.notification || payload.data || {};
-      toast("🔔 " + (d.title || "Bildirim") + (d.body ? " — " + d.body : ""));
-    });
+    const ok = await registerFcmToken(false);
     updateNotifButton();
-    toast("Bildirimler açıldı ✓");
+    if (ok) toast("Bildirimler açıldı ✓");
   } catch (e) { dbg("bildirim HATA: " + (e.code || e.message)); toast("Bildirim açılamadı."); }
 }
 $("btn-notif").addEventListener("click", () => enableNotifications());
+
+// Uygulama her açılışında: izin zaten verilmişse jetonu SESSİZCE tazele.
+// iOS PWA jetonları zamanla ölüyor; bu sayede "Bildirimleri aç" demeye gerek kalmaz.
+async function refreshNotifOnLaunch() {
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+  try { await registerFcmToken(true); } catch (e) { dbg("sessiz tazeleme hata: " + (e.code || e.message)); }
+}
 
 /* ================================================================
    SERVICE WORKER
