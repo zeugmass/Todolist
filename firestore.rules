@@ -10,8 +10,10 @@ service cloud.firestore {
     }
 
     // Davet kodları: code -> spaceId
+    // GÜVENLİK: yalnızca "get" (kodu bilen tek belgeyi okur); "list" KAPALI
+    // (aksi halde saldırgan tüm davetleri listeleyip her alanın spaceId'sini öğrenir).
     match /invites/{code} {
-      allow read:   if signedIn();
+      allow get:    if signedIn();
       allow create: if signedIn();
       allow delete: if signedIn()
         && get(/databases/$(database)/documents/spaces/$(resource.data.spaceId)).data.ownerUid == request.auth.uid;
