@@ -14,6 +14,13 @@ import { firebaseConfig } from "./firebase-config.js";
 // Web Push (bildirim) genel anahtarı — gizli değildir.
 const VAPID_KEY = "BGqR76axu5G6VDL1SxXPF4MMDfkF1vzHgGBe8rvr9n01Q0Gl-t3w4jXEtlqDn4wNGI22K1LKHOyvyKPl9mH5-ls";
 
+// Sürüm — her güncellemede artır (menüde altta gösterilir; güncelleme takibi için).
+const APP_VERSION = "5 · 2026-08-30";
+
+// Cihazın saat dilimi (IANA, örn. "Europe/Paris"). Görevlere yazılır ki sunucu tekrar
+// hesabını doğru yere göre yapsın (kullanıcı hangi ülkedeyse ona göre).
+const TZ = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch { return ""; } })();
+
 /* ---------- Firebase ---------- */
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
@@ -693,7 +700,7 @@ function openTodoEditor(t) {
         const md = Math.min(Math.max(parseInt($("e-monthday").value) || 1, 1), 28);
         dueAt = monthlyInitial(md, th, tm);
       }
-      await updateDoc(todoRef(t.id), { text, note, dueAt, repeat, weekdays }).catch(() => {});
+      await updateDoc(todoRef(t.id), { text, note, dueAt, repeat, weekdays, tz: TZ }).catch(() => {});
     }
   });
   wireEditor();
@@ -717,6 +724,7 @@ function deleteTodo(t) {
   if (t.dueAt) data.dueAt = t.dueAt;
   if (t.repeat) data.repeat = t.repeat;
   if (t.weekdays) data.weekdays = t.weekdays;
+  if (t.tz) data.tz = t.tz;
   if (t.doneBy) { data.doneBy = t.doneBy; data.doneByEmail = t.doneByEmail || ""; }
   const id = t.id, sid = spaceId, lid = activeListId;
   deleteDoc(doc(db, "spaces", sid, "lists", lid, "todos", id)).catch(() => {});
@@ -1066,6 +1074,7 @@ const isStandalone = () => window.matchMedia("(display-mode: standalone)").match
 let fcmForegroundBound = false; // onMessage yalnız bir kez bağlansın
 
 function updateNotifButton() {
+  const av = $("app-version"); if (av) av.textContent = "Sürüm " + APP_VERSION;
   const b = $("btn-notif");
   if (!b) return;
   const granted = ("Notification" in window) && Notification.permission === "granted";

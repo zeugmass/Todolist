@@ -2,6 +2,9 @@
 
 > Bu dosya, sohbeti **başka bir bilgisayarda** sürdürebilmek için proje durumunu özetler.
 > Claude bu dosyayı okuyup kaldığı yerden devam edebilir.
+>
+> **Uygulama sürümü:** `5 · 2026-08-30` (menüde altta gösterilir; `app.js` içindeki `APP_VERSION` + `sw.js` `CACHE` birlikte artırılır).
+> **Kullanıcı Türkiye'de DEĞİL, Fransa'da yaşıyor** (Europe/Paris). Saat hesapları buna göre.
 
 ## 1. Proje nedir?
 **Görevler** — kullanıcı (Ersin) ve eşinin ortak kullandığı, iPhone'da ana ekrana eklenen **PWA** yapılacaklar uygulaması. Firebase (Auth + Firestore + FCM) + saf HTML/CSS/JS. GitHub Pages'te barınır.
@@ -25,7 +28,8 @@
   - `shared:false` = **Kişisel** (tek kişi), `shared:true` = **Ortak** (eşle paylaşılan).
 - `spaces/{spaceId}/members/{uid}` = `{ email, joinedAt }`
 - `spaces/{spaceId}/lists/{listId}` = `{ title, emoji, createdAt, createdBy }`
-- `spaces/{spaceId}/lists/{listId}/todos/{todoId}` = `{ text, note, done, order, createdAt, createdBy, createdByEmail, doneBy, doneByEmail, doneAt, dueAt(ms), repeat, weekdays[], notifiedFor }`
+- `spaces/{spaceId}/lists/{listId}/todos/{todoId}` = `{ text, note, done, order, createdAt, createdBy, createdByEmail, doneBy, doneByEmail, doneAt, dueAt(ms), repeat, weekdays[], notifiedFor, tz }`
+  - `tz` = görevi kuran cihazın IANA saat dilimi (örn. `"Europe/Paris"`); sunucu tekrar/gün-dönümü hesabını buna göre yapar. Eski görevlerde yoksa sunucu `DEFAULT_TZ="Europe/Paris"` kullanır.
 - `spaces/{spaceId}/frequent/{key}` = `{ text, count, lastUsed }` (otomatik tamamlama)
 - `invites/{code}` = `{ spaceId }` (kod → alan eşlemesi; katılma için)
 
@@ -38,7 +42,7 @@ Güvenlik kuralları: `firestore.rules`. **Kritik:** `invites` yalnızca `get` (
 - Miktar/not, "kim ekledi/tamamladı" rozeti (yalnız Ortak'ta), tamamlananlar bölümü + sayaç.
 - Sık eklenenler otomatik tamamlama.
 - **Son tarih + tekrar** (Her gün / Haftalık→gün seç / Her ay); tekrarlayanı işaretleme sadece "yapıldı" yapar, **tarih ilerletme SUNUCUDA**.
-- **Gerçek push bildirim** (FCM + Cloud Function `sendReminders`, dakikada bir).
+- **Gerçek push bildirim** (FCM + Cloud Function `sendReminders`, dakikada bir). iOS mimarisi için §11.
 - İlaç takibi: Kişisel alanda "Her gün + saat" tekrarlı görevler.
 - Fazla boş Kişisel alanı otomatik temizleme (`healDuplicatePersonals`).
 - `?debug=1` ile ekran-üstü zamanlama günlüğü.
@@ -60,7 +64,7 @@ Güvenlik kuralları: `firestore.rules`. **Kritik:** `invites` yalnızca `get` (
 - **Kalan (düşük risk, opsiyonel sertleştirme):** bir spaceId API-dışı sızarsa katılma hâlâ mümkün. İstenirse katılmayı "geçerli davet kodu şart" yaparız (alan oluşturmayı 2 adıma bölen değişiklik + kural). Kullanıcı şimdilik "bu haliyle yeterli" dedi.
 
 ## 7. Bilinen davranışlar / gotchas
-- **Türkiye UTC+3 sabit** (yaz saati yok) — sunucu tarih hesabı bunu kullanıyor (`functions/index.js` OFFSET).
+- **Saat dilimi artık görev bazlı** (2026-08-30'da değişti). Eski sabit `OFFSET=UTC+3` KALDIRILDI. Sunucu her görevin `tz` alanına göre `partsInTz/msInTz/startOfToday` ile hesaplar (Intl, DST dahil). Gönderim (bildirim zamanı) zaten tz'den bağımsızdır (mutlak `dueAt`); tz yalnız **gün dönümü/tekrar ilerletme** için gerekir.
 - Tekrarlayan görevlerin gün-dönüşü **sunucuda** (`reArmRecurring` istemciden kaldırıldı — çift-cihaz yazma döngüsü/kilitlenmeye yol açıyordu).
 - Migration: eski tek-alanlı hesaplar ilk açılışta Kişisel+Ortak'a taşınır (`backfillPointers`, `data.spaceId` kullanır).
 - Testler canlı projede tek-kullanımlık `zz_...@example.com` hesaplarıyla yapılıp temizlenir (emülatör yok çünkü Java kurulu değildi).
@@ -78,5 +82,19 @@ Güvenlik kuralları: `firestore.rules`. **Kritik:** `invites` yalnızca `get` (
 
 ## 10. Kullanıcı bağlamı
 - Türkçe konuşur, teknik olmayan bir kullanıcı — adım adım, net yönlendirme ister.
+- **Fransa'da yaşıyor** (Europe/Paris). Eşi (sengulmazrek@hotmail.com) Ortak alanda üye.
 - GitHub **Desktop** kullanıyor (komut satırı değil); `firebase` CLI'ı bu proje için kurdu.
 - İletişim sıcak, sabırlı, "önce fikir alışverişi sonra kod" tarzını sever.
+
+## 11. iOS bildirim mimarisi (ÇOK ÖNEMLİ — çok emek istedi, bozma)
+iOS PWA web push kaprisli; doğru kombinasyon **deneyle** bulundu (2026-08-30):
+- **Sunucu SADECE `data` gönderir** (`functions/index.js`): `notification`/`webpush.notification` payload'ı **EKLEME**. Onları FCM ayrıca otomatik gösterir → iPhone'da **çift bildirim** olur. `webpush.headers.Urgency:high` kalsın.
+- **Bildirimi service worker gösterir** (`firebase-messaging-sw.js`): `onBackgroundMessage` → `showNotification`. Bu handler **iOS'ta gösteren TEK yerdir**; kaldırırsan **hiç bildirim gelmez**.
+- Yani: data-only (tek kaynak) + SW handler (tek gösterim) = **gelir + tek**. Bu ikisi birlikte olmalı.
+- **Jeton otomatik tazeleme:** iOS jetonları zamanla ölüyordu, kullanıcı sürekli "Bildirimleri aç" demek zorunda kalıyordu. Çözüm: `app.js` `refreshNotifOnLaunch()` — uygulama her açılışında izin varsa jetonu sessizce yeniler. `registerFcmToken(silent)` helper'ı hem butonla hem açılışta kullanılıyor. `fcmTokens` **tek jeton** olarak ÜZERİNE YAZILIR (arrayUnion değil) → birikip çift olmaz.
+- `notifiedFor` tuzağı (bilinen, düşük öncelikli): gönderim başarısız olsa da `notifiedFor` yazılıyor (satır ~135), o occurrence bir daha denenmiyor. Taze jeton varken sorun değil; istenirse `successCount>0` şartına bağlanabilir.
+
+## 12. Teşhis araçları (bu makinede)
+- `firebase` CLI kuruldu + `firebase login` yapıldı (ersinakyz07). Loglar: `firebase functions:log --only sendReminders --project todo-72119` (Cloud Logging ~8-14 dk gecikmeli düşer).
+- **Firestore'u doğrudan okuma:** `firebase-tools` refresh token'ından (`~/.config/configstore/firebase-tools.json`) access token üretip Firestore REST çağıran Node script'leri scratchpad'de yazıldı (users/spaces/members/tokens ve todos/dueAt/notifiedFor okumak için). Gerekirse yeniden yazılabilir; public OAuth client id/secret firebase-tools'un açık değerleri.
+- Log gecikmesi yüzünden testte: kullanıcı telefonda saat kurar, sunucu kaydı "Gönderilen: N" ile teyit edilir (N = başarıyla FCM'e giden jeton sayısı).
