@@ -90,10 +90,24 @@ exports.sendReminders = onSchedule(
       if (tokens.length) {
         const body = t.text + (t.note ? " — " + t.note : "");
         try {
-          await getMessaging().sendEachForMulticast({
-            tokens, data: { title: listTitle, body, url: "./", tag: docSnap.id }
+          // iOS için: görünür "notification" + "webpush" şart. Sadece "data"
+          // gönderilirse iPhone push'u sessiz sayıp GÖSTERMEZ.
+          const resp = await getMessaging().sendEachForMulticast({
+            tokens,
+            notification: { title: listTitle, body },
+            webpush: {
+              headers: { Urgency: "high", TTL: "3600" },
+              notification: { title: listTitle, body, icon: "icon-192.png", badge: "icon-192.png", tag: docSnap.id },
+              fcmOptions: { link: "./" }
+            },
+            data: { title: listTitle, body, url: "./", tag: docSnap.id }
           });
-          sent++;
+          sent += resp.successCount;
+          if (resp.failureCount) {
+            resp.responses.forEach((r, i) => {
+              if (!r.success) console.error("token gönderim hatası", tokens[i]?.slice(0, 12), r.error?.code);
+            });
+          }
         } catch (e) { console.error("gönderim hatası", e); }
       }
       await docSnap.ref.update({ notifiedFor: t.dueAt }).catch(() => {});

@@ -1083,7 +1083,9 @@ async function enableNotifications() {
     const token = await getToken(messaging, { vapidKey: VAPID_KEY, serviceWorkerRegistration: reg });
     if (!token) { toast("Bildirim jetonu alınamadı."); return; }
     dbg("fcm token alındı: " + token.slice(0, 12) + "…");
-    await setDoc(doc(db, "users", currentUser.uid), { fcmTokens: arrayUnion(token) }, { merge: true });
+    // Tek cihaz = tek jeton. Diziye eklemek yerine ÜZERİNE YAZ; böylece eski/ölü
+    // jetonlar birikmez ve aynı bildirim iPhone'a çift düşmez.
+    await setDoc(doc(db, "users", currentUser.uid), { fcmTokens: [token] }, { merge: true });
     onMessage(messaging, (payload) => {
       const d = payload.notification || payload.data || {};
       toast("🔔 " + (d.title || "Bildirim") + (d.body ? " — " + d.body : ""));
