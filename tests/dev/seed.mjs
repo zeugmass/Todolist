@@ -53,4 +53,9 @@ await put(`users/${B.uid}`, { email: B.email, spaceId: "devShared", spaces: { de
 await put("spaces/devShared/lists/L1", { title: "Alışveriş", emoji: "🛒", createdAt: now, createdBy: A.uid });
 await put("spaces/devShared/lists/L1/todos/T1", { text: "Süt al", note: "", done: false, order: 1, createdAt: now, createdBy: A.uid, createdByEmail: A.email });
 
-console.log("Emülatör test verisi yüklendi: 2 hesap, ortak + 2 kişisel alan, 1 liste.");
+// Hazır test bebeği + 1 saat önce biberon (Faz 2 testlerini hızlandırmak için)
+const at = Date.now() - 3600000;
+await put("spaces/devShared/babies/devBaby", { name: "Test Bebek", birthDate: "2026-09-10", feedReminderHours: 3, createdBy: A.uid, createdAt: now, tz: "Europe/Paris", lastFeedAt: at, nextFeedAt: at + 3 * 3600000 });
+await put("spaces/devShared/babies/devBaby/events/f1", { type: "feed", method: "bottle", at, ml: 120, milk: "breast", note: null, by: A.uid, tz: "Europe/Paris", createdAt: now, updatedAt: now });
+
+console.log("Emülatör test verisi yüklendi: 2 hesap, ortak + 2 kişisel alan, 1 liste, 1 test bebeği.");

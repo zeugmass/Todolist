@@ -84,10 +84,16 @@ service cloud.firestore {
           && t.kind == 'breast' && t.side in ['L', 'R']
           && t.startedAt is int && t.startedBy is string);
       }
+      function validSleepTimer(t) {
+        return t == null || (t is map
+          && t.keys().hasOnly(['startedAt', 'startedBy'])
+          && t.startedAt is int && t.startedBy is string);
+      }
       function validBaby(d) {
         return d.keys().hasOnly(['name', 'birthDate', 'createdAt', 'createdBy', 'feedReminderHours',
                                  'lastFeedAt', 'nextFeedAt', 'nextFeedNotifiedFor', 'activeTimer',
-                                 'lastBottleMl', 'lastMilk', 'tz'])
+                                 'sleepTimer', 'lastBottleMl', 'lastMilk', 'tz'])
+          && (!('sleepTimer' in d) || validSleepTimer(d.sleepTimer))
           && d.name is string && d.name.size() >= 1 && d.name.size() <= 40
           && (!('birthDate' in d) || d.birthDate == null
               || (d.birthDate is string && d.birthDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')))
@@ -100,6 +106,7 @@ service cloud.firestore {
           && (!('lastMilk' in d) || d.lastMilk == null || d.lastMilk in ['breast', 'formula'])
           && (!('tz' in d) || (d.tz is string && d.tz.size() <= 64));
       }
+      // Kayıt türleri: feed (beslenme), diaper (bez), sleep (uyku) — validEvent hepsini kapsar
       // Beslenme kaydı: biberon (ml) ya da emzirme (taraf + bitiş, en fazla 6 saat)
       function validFeed(d) {
         return d.keys().hasOnly(['type', 'method', 'at', 'endAt', 'ml', 'milk', 'side', 'note',
@@ -120,6 +127,28 @@ service cloud.firestore {
               && d.endAt is int && d.endAt >= d.at && d.endAt <= d.at + 21600000)
           );
       }
+      // Ortak: zaman makul, yazar metin, not ≤200, saat dilimi ≤64
+      function validCommon(d) {
+        return d.at is int && d.at > 1577836800000 && d.at < request.time.toMillis() + 86400000
+          && d.by is string
+          && (!('note' in d) || d.note == null || (d.note is string && d.note.size() <= 200))
+          && (!('tz' in d) || (d.tz is string && d.tz.size() <= 64));
+      }
+      // Bez: ıslak ve/veya kirli (en az biri)
+      function validDiaper(d) {
+        return d.keys().hasOnly(['type', 'at', 'pee', 'poo', 'note', 'by', 'createdAt', 'updatedAt', 'tz'])
+          && d.type == 'diaper' && validCommon(d)
+          && d.pee is bool && d.poo is bool && (d.pee || d.poo);
+      }
+      // Uyku: başlangıç + bitiş (en fazla 16 saat)
+      function validSleep(d) {
+        return d.keys().hasOnly(['type', 'at', 'endAt', 'note', 'by', 'createdAt', 'updatedAt', 'tz'])
+          && d.type == 'sleep' && validCommon(d)
+          && d.endAt is int && d.endAt >= d.at && d.endAt <= d.at + 57600000;
+      }
+      function validEvent(d) {
+        return (d.type == 'feed' && validFeed(d)) || validDiaper(d) || validSleep(d);
+      }
       match /babies/{babyId} {
         allow read:   if isMember();
         allow create: if isMember() && validBaby(request.resource.data)
@@ -131,10 +160,10 @@ service cloud.firestore {
         match /events/{eventId} {
           allow read:   if isMember();
           // Yazar (by): kendisi ya da BU alanın bir üyesi (eşinin sildiği kaydı "geri al" için)
-          allow create: if isMember() && validFeed(request.resource.data)
+          allow create: if isMember() && validEvent(request.resource.data)
             && exists(memberPath(spaceId, request.resource.data.by));
           // Düzenlemede asıl yazar korunur (eşler birbirinin kaydını düzeltebilir)
-          allow update: if isMember() && validFeed(request.resource.data)
+          allow update: if isMember() && validEvent(request.resource.data)
             && request.resource.data.by == resource.data.by;
           allow delete: if isMember();
         }

@@ -18,6 +18,9 @@ const SIDE = { L: "Sol", R: "Sağ", both: "İki taraf" };
 const REMIND_OPTS = [[0, "Kapalı"], [3, "3 saat"], [3.5, "3,5 saat"], [4, "4 saat"]]; // kurallarla aynı
 const fmtH = (h) => String(h).replace(".", ","); // 3.5 → "3,5"
 const MAX_BREAST_MS = 6 * HOUR;   // kurallarla aynı üst sınır
+const MAX_SLEEP_MS = 16 * HOUR;   // kurallarla aynı üst sınır
+const WHEN_HTML = `<div class="bb-seg" id="f-when"><button type="button" data-m="0">Şimdi</button><button type="button" data-m="15">15 dk önce</button><button type="button" data-m="30">30 dk önce</button></div>`;
+const SLEEP_CHIPS = [[30, "30 dk"], [60, "1 sa"], [90, "1,5 sa"], [120, "2 sa"], [180, "3 sa"]];
 const FUTURE_SLACK = 5 * MIN;     // saat farkları için küçük tolerans
 
 /* ---------- zaman yardımcıları (cihazın yerel saatiyle) ---------- */
@@ -68,6 +71,14 @@ function feedText(ev) {
   if (ev.method === "bottle") return `🍼 ${ev.ml} ml` + (ev.milk && MILK[ev.milk] ? ` · ${MILK[ev.milk]}` : "");
   return `🤱 ${SIDE[ev.side] || ""} · ${durText((ev.endAt || ev.at) - ev.at)}`;
 }
+function diaperText(ev) {
+  return "🧷 " + (ev.pee && ev.poo ? "Islak + kirli" : ev.poo ? "Kirli" : "Islak");
+}
+function evText(ev) {
+  if (ev.type === "diaper") return diaperText(ev);
+  if (ev.type === "sleep") return `😴 Uyku · ${durText((ev.endAt || ev.at) - ev.at)}`;
+  return feedText(ev);
+}
 
 /* ---------- güvenli DOM yardımcıları ---------- */
 function el(tag, cls, text) {
@@ -101,10 +112,11 @@ export function createBabyTracker(ctx) {
 
   let sid = null, bid = null, baby = null;
   let babiesUnsub = null, lastUnsub = null, dayUnsub = null, membersUnsub = null;
-  let lastFeed = null, lastLoaded = false, dayEvents = [];
+  let lastDiaperUnsub = null, lastSleepUnsub = null;
+  let lastFeed = null, lastLoaded = false, lastDiaper = null, lastSleep = null, dayEvents = [];
   let dayStart = startOfDay(Date.now()), followToday = true;
   const members = new Map(); // uid -> e-posta (baş harf için)
-  let ticker = null;
+  let ticker = null, tickCount = 0;
 
   const uid = () => getUser()?.uid;
   const babyRef = () => doc(db, "spaces", sid, "babies", bid);
@@ -142,9 +154,16 @@ export function createBabyTracker(ctx) {
     ticker = setInterval(updateLive, 1000);
   }
 
+  // Türe göre en son kayıt. Canlıda bileşik dizin gerekir: events (type ↑, at ↓) — firestore.indexes.json
+  const lastOf = (type) => query(evCol(), where("type", "==", type), orderBy("at", "desc"), limit(1));
+  const firstDoc = (snap) => (snap.empty ? null : { id: snap.docs[0].id, ...snap.docs[0].data() });
   function startEvents() {
     lastLoaded = false;
-    lastUnsub = onSnapshot(query(evCol(), orderBy("at", "desc"), limit(1)), (snap) => {
+    lastDiaperUnsub = onSnapshot(lastOf("diaper"), (s) => { lastDiaper = firstDoc(s); render(); },
+      (e) => dbg("son bez HATA: " + (e.code || e.message)));
+    lastSleepUnsub = onSnapshot(lastOf("sleep"), (s) => { lastSleep = firstDoc(s); render(); },
+      (e) => dbg("son uyku HATA: " + (e.code || e.message)));
+    lastUnsub = onSnapshot(lastOf("feed"), (snap) => {
       lastFeed = snap.empty ? null : { id: snap.docs[0].id, ...snap.docs[0].data() };
       lastLoaded = true;
       syncNextFeed(); render();
@@ -166,7 +185,9 @@ export function createBabyTracker(ctx) {
   function stopEvents() {
     if (lastUnsub) { lastUnsub(); lastUnsub = null; }
     if (dayUnsub) { dayUnsub(); dayUnsub = null; }
-    lastFeed = null; lastLoaded = false; dayEvents = [];
+    if (lastDiaperUnsub) { lastDiaperUnsub(); lastDiaperUnsub = null; }
+    if (lastSleepUnsub) { lastSleepUnsub(); lastSleepUnsub = null; }
+    lastFeed = null; lastLoaded = false; lastDiaper = null; lastSleep = null; dayEvents = [];
   }
 
   function stop() {
@@ -201,6 +222,10 @@ export function createBabyTracker(ctx) {
     if (ago && lastFeed) ago.textContent = agoText(lastFeed.at);
     const tm = document.getElementById("bb-timer");
     if (tm && baby.activeTimer) tm.textContent = clock(Date.now() - baby.activeTimer.startedAt);
+    const st = document.getElementById("bb-stimer");
+    if (st && baby.sleepTimer) st.textContent = clock(Date.now() - baby.sleepTimer.startedAt);
+    // "son bez … önce / uyanık …" kutucukları için 30 sn'de bir yeniden çiz (pencere açıkken değil)
+    if (++tickCount % 30 === 0 && $("modal-overlay").classList.contains("hidden")) render();
   }
 
   /* ================= çizim ================= */
@@ -212,13 +237,17 @@ export function createBabyTracker(ctx) {
     const frag = document.createDocumentFragment();
     frag.append(summaryCard());
     if (baby.activeTimer) frag.append(timerCard());
+    if (baby.sleepTimer) frag.append(sleepCard());
     frag.append(actionsRow(), dayNav(), timeline());
     root.replaceChildren(frag);
   }
 
+  // Gün özeti. Uyku, BAŞLADIĞI güne yazılır (gece yarısını geçen uyku, başladığı günde sayılır).
   function dayTotals() {
-    const t = { count: 0, bottles: 0, breasts: 0, ml: 0, breastMs: 0 };
+    const t = { count: 0, bottles: 0, breasts: 0, ml: 0, breastMs: 0, diapers: 0, pee: 0, poo: 0, sleepMs: 0 };
     for (const ev of dayEvents) {
+      if (ev.type === "diaper") { t.diapers++; if (ev.pee) t.pee++; if (ev.poo) t.poo++; continue; }
+      if (ev.type === "sleep") { t.sleepMs += Math.max(0, (ev.endAt || ev.at) - ev.at); continue; }
       t.count++;
       if (ev.method === "bottle") { t.bottles++; t.ml += ev.ml || 0; }
       else { t.breasts++; t.breastMs += Math.max(0, (ev.endAt || ev.at) - ev.at); }
@@ -257,8 +286,24 @@ export function createBabyTracker(ctx) {
     c.append(el("div", "bb-sub", tot.count
       ? `${tot.count} beslenme · 🍼 ${tot.bottles} · 🤱 ${tot.breasts}${tot.breastMs ? ` (${durText(tot.breastMs)})` : ""}`
       : "Bu gün beslenme yok"));
+    c.append(tilesRow(tot));
     c.append(btn("bb-remind", reminderText(), openSettings));
     return c;
+  }
+
+  // Bez ve uyku kutucukları (seçili günün toplamı + "son / uyanık" bilgisi)
+  function tilesRow(tot) {
+    const row = el("div", "bb-tiles");
+    const d = el("div", "bb-tile");
+    const dSub = (tot.diapers ? `💧${tot.pee} · 💩${tot.poo}` : "—")
+      + (lastDiaper && Date.now() - lastDiaper.at < DAY ? ` · son ${agoText(lastDiaper.at)}` : "");
+    d.append(el("div", "bb-tile-label", "🧷 Bez"), el("div", "bb-tile-val", String(tot.diapers)), el("div", "bb-tile-sub", dSub));
+    const s = el("div", "bb-tile");
+    const awake = baby.sleepTimer ? "şu an uyuyor"
+      : lastSleep && lastSleep.endAt && Date.now() - lastSleep.endAt < DAY ? `uyanık ${durText(Date.now() - lastSleep.endAt)}` : "—";
+    s.append(el("div", "bb-tile-label", "😴 Uyku"), el("div", "bb-tile-val", tot.sleepMs ? durText(tot.sleepMs) : "0 dk"), el("div", "bb-tile-sub", awake));
+    row.append(d, s);
+    return row;
   }
 
   function timerCard() {
@@ -279,6 +324,8 @@ export function createBabyTracker(ctx) {
     const r = el("div", "bb-actions");
     r.append(btn("bb-action", "🍼 Biberon", () => openBottle()));
     if (!baby.activeTimer) r.append(btn("bb-action", "🤱 Emzirme", () => openBreast()));
+    r.append(btn("bb-action", "🧷 Bez", () => openDiaper()));
+    if (!baby.sleepTimer) r.append(btn("bb-action", "😴 Uyku", () => openSleep()));
     return r;
   }
 
@@ -306,7 +353,7 @@ export function createBabyTracker(ctx) {
       const li = el("li", "bb-ev");
       li.append(el("span", "bb-time", hhmm(ev.at)));
       const desc = el("div", "bb-desc");
-      desc.append(el("div", null, feedText(ev)));
+      desc.append(el("div", null, evText(ev)));
       if (ev.note) desc.append(el("div", "bb-note", ev.note));
       li.append(desc);
       if (members.size > 1 && ev.by) {
@@ -315,7 +362,7 @@ export function createBabyTracker(ctx) {
         chip.title = members.get(ev.by) || "";
         li.append(chip);
       }
-      li.addEventListener("click", () => (ev.method === "bottle" ? openBottle(ev) : openBreastManual(ev)));
+      li.addEventListener("click", () => openEditor(ev));
       ul.append(li);
     }
     return ul;
@@ -534,6 +581,161 @@ export function createBabyTracker(ctx) {
       bodyHTML: '<p class="hint">Bu emzirme <b>kaydedilmeyecek</b>. Emin misin?</p>',
       onOk: () => { updateDoc(babyRef(), { activeTimer: null }).catch(fail("Sayaç")); }
     });
+  }
+
+  // Listedeki kayda dokununca türüne uygun düzenleyiciyi aç
+  function openEditor(ev) {
+    if (ev.type === "diaper") return openDiaper(ev);
+    if (ev.type === "sleep") return openSleepManual(ev);
+    return ev.method === "bottle" ? openBottle(ev) : openBreastManual(ev);
+  }
+
+  /* ================= bez ================= */
+  // Yeni kayıt: türe (Islak/Kirli/İkisi) dokunmak = HEMEN KAYDET (2 dokunuş). Saat/not önce ayarlanabilir.
+  // Düzenleme: türü seç, sonra Kaydet.
+  function openDiaper(ev) {
+    if (!bid) return;
+    const editing = !!ev;
+    const baseDay = editing ? startOfDay(ev.at) : dayStart;
+    const newToday = !editing && baseDay === startOfDay(Date.now());
+    const ref = editing ? evRef(ev.id) : null;
+    const KINDS = [["pee", "💧 Islak"], ["poo", "💩 Kirli"], ["both", "💧💩 İkisi"]];
+    let kind = editing ? (ev.pee && ev.poo ? "both" : ev.poo ? "poo" : "pee") : null;
+    const mb = $("modal-body");
+    const save = (k) => {
+      const r = resolveAt(baseDay, mb.querySelector("#f-time").value, newToday);
+      if (r.error) { modalError(r.error); return false; }
+      const note = mb.querySelector("#f-note").value.trim().slice(0, 200) || null;
+      const data = { type: "diaper", at: r.at, pee: k !== "poo", poo: k !== "pee", note, tz: TZ, updatedAt: serverTimestamp() };
+      if (editing) { updateDoc(ref, data).catch(fail("Bez")); toast("Güncellendi"); }
+      else { setDoc(doc(evCol()), { ...data, by: uid(), createdAt: serverTimestamp() }).catch(fail("Bez")); toast(`${diaperText(data)} kaydedildi`); }
+      return true;
+    };
+    openModal({
+      title: editing ? "🧷 Bezi düzenle" : "🧷 Bez",
+      autofocus: false,
+      showCancel: editing,
+      okText: editing ? "Kaydet" : "Vazgeç",
+      bodyHTML: `
+        <div class="bb-bigbtns three${editing ? " pick" : ""}" id="f-kind">${KINDS.map(([v, t]) => `<button type="button" class="bb-bigbtn" data-v="${v}">${t}</button>`).join("")}</div>
+        <p class="hint">${editing ? "Türü seç, sonra Kaydet." : "Türe dokununca hemen kaydedilir. Saati değiştirmek istersen önce aşağıdan ayarla."}</p>
+        <div class="field-label">Saat</div>
+        ${newToday ? WHEN_HTML : ""}
+        <input id="f-time" type="time" aria-label="Saat" />
+        <input id="f-note" type="text" maxlength="200" placeholder="Not (isteğe bağlı)" autocomplete="off" />
+        ${editing ? `<button type="button" id="f-del" class="link-btn danger bb-del">Bu kaydı sil</button>` : ""}`,
+      onOk: editing ? () => (save(kind) ? undefined : false) : undefined
+    });
+    const kindBtns = [...mb.querySelectorAll("#f-kind button")];
+    const paint = () => kindBtns.forEach((b) => b.classList.toggle("sel", b.dataset.v === kind));
+    paint();
+    kindBtns.forEach((b) => b.addEventListener("click", () => {
+      kind = b.dataset.v;
+      if (editing) paint();
+      else if (save(kind)) closeModal();
+    }));
+    const timeEl = mb.querySelector("#f-time");
+    timeEl.value = hhmm(editing ? ev.at : Date.now());
+    wireWhen(mb, timeEl);
+    mb.querySelector("#f-note").value = editing ? (ev.note || "") : "";
+    if (editing) mb.querySelector("#f-del").addEventListener("click", () => { closeModal(); deleteEvent(ev, ref); });
+  }
+
+  /* ================= uyku ================= */
+  function openSleep() {
+    if (!bid) return;
+    const mb = $("modal-body");
+    openModal({
+      title: "😴 Uyku", autofocus: false, showCancel: false, okText: "Vazgeç",
+      bodyHTML: `
+        <div class="bb-bigbtns one"><button type="button" class="bb-bigbtn" id="f-sleepnow">😴 Şimdi uyudu — sayacı başlat</button></div>
+        <p class="hint">Uyanınca “Uyandı”ya bas. Telefonu kilitlesen de sayaç sürer ve eşin de görür.</p>
+        <button type="button" id="f-manual" class="link-btn">Geçmiş bir uykuyu elle ekle</button>`
+    });
+    mb.querySelector("#f-sleepnow").addEventListener("click", () => { closeModal(); sleepStart(); });
+    mb.querySelector("#f-manual").addEventListener("click", () => { closeModal(); openSleepManual(); });
+  }
+
+  function openSleepManual(ev) {
+    if (!bid) return;
+    const editing = !!ev;
+    let dur = editing ? Math.max(1, Math.round((ev.endAt - ev.at) / MIN)) : 60;
+    const baseDay = editing ? startOfDay(ev.at) : dayStart;
+    const newToday = !editing && baseDay === startOfDay(Date.now());
+    const ref = editing ? evRef(ev.id) : null;
+    const mb = $("modal-body");
+    openModal({
+      title: editing ? "😴 Uykuyu düzenle" : "😴 Uyku ekle",
+      autofocus: false,
+      bodyHTML: `
+        <div class="field-label">Uyuduğu saat</div>
+        <input id="f-time" type="time" aria-label="Uyuduğu saat" />
+        <div class="field-label">Süre</div>
+        <div class="bb-chips" id="f-durchips">${SLEEP_CHIPS.map(([v, t]) => `<button type="button" data-v="${v}">${t}</button>`).join("")}</div>
+        <input id="f-dur" type="number" min="1" max="960" inputmode="numeric" aria-label="Süre (dakika)" placeholder="Dakika" />
+        <input id="f-note" type="text" maxlength="200" placeholder="Not (isteğe bağlı)" autocomplete="off" />
+        ${editing ? `<button type="button" id="f-del" class="link-btn danger bb-del">Bu kaydı sil</button>` : ""}`,
+      okText: "Kaydet",
+      onOk: () => {
+        const d = parseInt(mb.querySelector("#f-dur").value, 10);
+        if (!Number.isInteger(d) || d < 1 || d > 960) { modalError("Süre 1–960 dakika (en fazla 16 saat) olmalı."); return false; }
+        const r = resolveAt(baseDay, mb.querySelector("#f-time").value, newToday);
+        if (r.error) { modalError(r.error); return false; }
+        const endAt = r.at + d * MIN;
+        if (endAt > Date.now() + FUTURE_SLACK) { modalError("Uyku bitişi şu andan ileri olamaz. Saati ya da süreyi düzelt."); return false; }
+        const note = mb.querySelector("#f-note").value.trim().slice(0, 200) || null;
+        const data = { type: "sleep", at: r.at, endAt, note, tz: TZ, updatedAt: serverTimestamp() };
+        if (editing) { updateDoc(ref, data).catch(fail("Uyku")); toast("Güncellendi"); }
+        else {
+          setDoc(doc(evCol()), { ...data, by: uid(), createdAt: serverTimestamp() }).catch(fail("Uyku"));
+          toast(`😴 ${durText(d * MIN)} uyku kaydedildi`);
+        }
+      }
+    });
+    const durEl = mb.querySelector("#f-dur");
+    const chips = [...mb.querySelectorAll("#f-durchips button")];
+    const setDur = (x) => { dur = x; durEl.value = x; chips.forEach((c) => c.classList.toggle("sel", +c.dataset.v === x)); };
+    setDur(dur);
+    chips.forEach((c) => c.addEventListener("click", () => setDur(+c.dataset.v)));
+    durEl.addEventListener("input", () => chips.forEach((c) => c.classList.toggle("sel", +c.dataset.v === parseInt(durEl.value, 10))));
+    mb.querySelector("#f-time").value = hhmm(editing ? ev.at : Date.now() - dur * MIN);
+    mb.querySelector("#f-note").value = editing ? (ev.note || "") : "";
+    if (editing) mb.querySelector("#f-del").addEventListener("click", () => { closeModal(); deleteEvent(ev, ref); });
+  }
+
+  // Uyku sayacı da bebek belgesinde → telefon kapansa da sürer, iki telefonda görünür
+  function sleepStart() {
+    updateDoc(babyRef(), { sleepTimer: { startedAt: Date.now(), startedBy: uid() } }).catch(fail("Uyku sayacı"));
+  }
+  function sleepFinish() {
+    const t = baby && baby.sleepTimer; if (!t) return;
+    const now = Date.now();
+    const end = Math.max(t.startedAt, Math.min(now, t.startedAt + MAX_SLEEP_MS));
+    const by = members.has(t.startedBy) ? t.startedBy : uid();
+    const b = writeBatch(db);
+    b.set(doc(evCol()), { type: "sleep", at: t.startedAt, endAt: end, note: null, tz: TZ, by,
+      createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+    b.update(babyRef(), { sleepTimer: null });
+    b.commit().catch(fail("Uyku"));
+    toast(now - t.startedAt > MAX_SLEEP_MS ? "Uyku 16 saatle sınırlandı ve kaydedildi" : `😴 ${durText(end - t.startedAt)} uyku kaydedildi`);
+  }
+  function sleepCancel() {
+    openModal({
+      title: "Uyku sayacını iptal et", autofocus: false, okText: "İptal et", okDanger: true,
+      bodyHTML: '<p class="hint">Bu uyku <b>kaydedilmeyecek</b>. Emin misin?</p>',
+      onOk: () => { updateDoc(babyRef(), { sleepTimer: null }).catch(fail("Uyku sayacı")); }
+    });
+  }
+  function sleepCard() {
+    const t = baby.sleepTimer;
+    const c = el("section", "bb-card bb-timer");
+    const by = t.startedBy && t.startedBy !== uid() && members.size > 1 ? ` · ${initial(t.startedBy)} başlattı` : "";
+    c.append(el("div", "bb-label", `😴 Uyuyor · ${hhmm(t.startedAt)}${by}`));
+    const big = el("div", "bb-big bb-clock", clock(Date.now() - t.startedAt)); big.id = "bb-stimer";
+    const acts = el("div", "bb-timer-actions");
+    acts.append(btn("btn-primary", "Uyandı", sleepFinish));
+    c.append(big, acts, btn("link-btn danger bb-cancel", "Sayacı iptal et", sleepCancel));
+    return c;
   }
 
   // Sil + "Geri al" (5 sn). Yol silme anında sabitlenir (sonra alan değişse bile doğru yere geri yazar).

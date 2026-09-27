@@ -139,3 +139,48 @@ test("silme: üye ✓ / izinsiz ✗", async () => {
   await assertFails(deleteDoc(doc(as(X), ...evPath("e1"))));
   await assertSucceeds(deleteDoc(doc(as(B), ...evPath("e1"))));
 });
+
+// ── FAZ 2: BEZ ───────────────────────────────────────────────────────────────
+const diaper = (over = {}) => ({ type: "diaper", at: NOW - 5 * MIN, pee: true, poo: false, by: A, tz: "Europe/Paris", ...over });
+test("bez: ıslak ✓ / kirli ✓ / ikisi ✓ / hiçbiri ✗", async () => {
+  const db = as(A);
+  await assertSucceeds(setDoc(doc(db, ...evPath("d1")), diaper()));
+  await assertSucceeds(setDoc(doc(db, ...evPath("d2")), diaper({ pee: false, poo: true })));
+  await assertSucceeds(setDoc(doc(db, ...evPath("d3")), diaper({ pee: true, poo: true, note: "pişik var" })));
+  await assertFails(setDoc(doc(db, ...evPath("d4")), diaper({ pee: false, poo: false })));
+});
+test("bez: metin değer / eksik alan / ml gibi fazladan alan / sahte yazar ✗", async () => {
+  const db = as(A);
+  await assertFails(setDoc(doc(db, ...evPath("d5")), diaper({ pee: "evet" })));
+  const { poo, ...noPoo } = diaper();
+  await assertFails(setDoc(doc(db, ...evPath("d6")), noPoo));
+  await assertFails(setDoc(doc(db, ...evPath("d7")), diaper({ ml: 50 })));
+  await assertFails(setDoc(doc(db, ...evPath("d8")), diaper({ by: X })));
+});
+
+// ── FAZ 2: UYKU ──────────────────────────────────────────────────────────────
+const sleep = (over = {}) => ({ type: "sleep", at: NOW - 2 * H, endAt: NOW - 30 * MIN, by: B, ...over });
+test("uyku: geçerli (1,5 sa) ✓ / 16 sa ✓", async () => {
+  await assertSucceeds(setDoc(doc(as(B), ...evPath("s1")), sleep()));
+  await assertSucceeds(setDoc(doc(as(B), ...evPath("s2")), sleep({ at: NOW - 17 * H, endAt: NOW - H })));
+});
+test("uyku: bitiş yok / başlangıçtan önce / 16 saatten uzun / taraf alanı ✗", async () => {
+  const db = as(B);
+  const { endAt, ...noEnd } = sleep();
+  await assertFails(setDoc(doc(db, ...evPath("s3")), noEnd));
+  await assertFails(setDoc(doc(db, ...evPath("s4")), sleep({ endAt: NOW - 3 * H })));
+  await assertFails(setDoc(doc(db, ...evPath("s5")), sleep({ at: NOW - 20 * H, endAt: NOW })));
+  await assertFails(setDoc(doc(db, ...evPath("s6")), sleep({ side: "L" })));
+});
+test("uyku sayacı: geçerli ✓ / fazladan alan ✗ / metin zaman ✗ / kapatma ✓", async () => {
+  const db = as(A);
+  await assertSucceeds(updateDoc(doc(db, ...babyPath()), { sleepTimer: { startedAt: NOW, startedBy: A } }));
+  await assertFails(updateDoc(doc(db, ...babyPath()), { sleepTimer: { startedAt: NOW, startedBy: A, x: 1 } }));
+  await assertFails(updateDoc(doc(db, ...babyPath()), { sleepTimer: { startedAt: "şimdi", startedBy: A } }));
+  await assertSucceeds(updateDoc(doc(db, ...babyPath()), { sleepTimer: null }));
+});
+test("tür karıştırma: bez alanlarıyla uyku / uyku alanlarıyla bez ✗", async () => {
+  const db = as(A);
+  await assertFails(setDoc(doc(db, ...evPath("m1")), { ...sleep(), type: "diaper" }));
+  await assertFails(setDoc(doc(db, ...evPath("m2")), { ...diaper(), type: "sleep" }));
+});

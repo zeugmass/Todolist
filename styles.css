@@ -315,7 +315,16 @@ input:focus { border-color: var(--accent); }
 .bb-timer-actions button { flex: 1; width: auto; }
 .bb-cancel { display: block; margin: 8px auto 0; font-size: 14px; }
 .bb-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.bb-actions .bb-action:only-child { grid-column: 1 / -1; }
+.bb-actions .bb-action:last-child:nth-child(odd) { grid-column: 1 / -1; } /* tek kalan düğme tam genişlik */
+.bb-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+.bb-tile { min-width: 0; background: var(--surface); border-radius: 12px; padding: 10px 12px; }
+.bb-tile-label { font-size: 12px; color: var(--muted); font-weight: 700; }
+.bb-tile-val { font-size: 20px; font-weight: 700; margin: 2px 0; font-variant-numeric: tabular-nums; }
+.bb-tile-sub { font-size: 12.5px; color: var(--muted); line-height: 1.3; }
+.bb-bigbtns.three { grid-template-columns: repeat(3, 1fr); }
+.bb-bigbtns.three .bb-bigbtn { padding: 20px 4px; font-size: 15px; }
+.bb-bigbtns.one { grid-template-columns: 1fr; }
+.bb-bigbtns.pick .bb-bigbtn:not(.sel) { opacity: .35; }
 .bb-action { padding: 22px 8px; border-radius: 18px; background: var(--accent); color: var(--accent-contrast); font-size: 19px; font-weight: 700; }
 .bb-action:active, .bb-bigbtn:active { opacity: .85; }
 .bb-daynav { display: flex; align-items: center; justify-content: space-between; margin-top: 2px; }
