@@ -285,3 +285,9 @@ input:focus { border-color: var(--accent); }
   max-width: 90%;
 }
 .snackbar-btn { color: var(--bg); font-weight: 700; text-decoration: underline; }
+
+/* App Check / reCAPTCHA: yüzen rozet arayüzü kapatmasın. Google'ın şartı gereği yerine
+   menü altında bilgi metni (.recaptcha-note) gösteriliyor. */
+.grecaptcha-badge { visibility: hidden !important; }
+.recaptcha-note { text-align: center; font-size: 10px; opacity: .45; margin-top: 4px; line-height: 1.4; }
+.recaptcha-note a { color: inherit; text-decoration: underline; }

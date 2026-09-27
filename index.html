@@ -2,6 +2,22 @@
 <html lang="tr">
 <head>
   <meta charset="UTF-8" />
+  <!-- GÜVENLİK (CSP): sayfa YALNIZ aşağıdaki kaynaklardan kod çalıştırır/bağlanır.
+       Satır içi <script> ve on*="" olay işleyicileri YASAK. Yeni bir dış kaynak eklersen buraya da ekle.
+       Bir şey engellenirse ?debug=1 ile "CSP ENGEL" satırı görünür. -->
+  <meta http-equiv="Content-Security-Policy" content="
+    default-src 'self';
+    script-src 'self' https://www.gstatic.com https://cdnjs.cloudflare.com https://www.google.com;
+    connect-src 'self' https://firestore.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://firebaseinstallations.googleapis.com https://fcmregistrations.googleapis.com https://fcm.googleapis.com https://content-firebaseappcheck.googleapis.com https://firebaseappcheck.googleapis.com https://www.google.com https://www.gstatic.com;
+    frame-src https://www.google.com https://recaptcha.google.com;
+    img-src 'self' data: https://www.gstatic.com;
+    style-src 'self' 'unsafe-inline';
+    font-src 'self';
+    worker-src 'self';
+    manifest-src 'self';
+    object-src 'none';
+    base-uri 'none';
+    form-action 'self'" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no" />
   <title>Görevler</title>
   <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
@@ -115,6 +131,8 @@
         <button id="btn-signout" class="foot-btn danger">Çıkış yap</button>
       </div>
       <div id="app-version" class="muted" style="text-align:center;font-size:11px;opacity:.55;margin-top:12px"></div>
+      <!-- reCAPTCHA rozeti CSS ile gizlendiği için Google'ın istediği bilgi metni burada -->
+      <div class="muted recaptcha-note">Bu uygulama reCAPTCHA ile korunur; Google <a href="https://policies.google.com/privacy" target="_blank" rel="noopener">Gizlilik</a> ve <a href="https://policies.google.com/terms" target="_blank" rel="noopener">Şartlar</a> geçerlidir.</div>
     </div>
   </aside>
 
@@ -141,7 +159,7 @@
     <button id="snackbar-action" class="snackbar-btn">Geri al</button>
   </div>
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.6/Sortable.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.6/Sortable.min.js" integrity="sha512-csIng5zcB+XpulRUa+ev1zKo7zRNGpEaVfNB9On1no9KYTEY/rLGAEEpvgdw6nim1WdTuihZY1eqZ31K7/fZjw==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
   <script type="module" src="app.js"></script>
 </body>
 </html>

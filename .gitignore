@@ -1,2 +1,6 @@
 # Yalnız yerel (herkese açık repoya GİTMEZ): e-postalar ve güvenlik notları içerir
 HANDOFF.md
+# Yerel veri yedekleri (herkese açık repoya GİTMEZ)
+_yedek/
+# Yerel araç ayarları
+.claude/

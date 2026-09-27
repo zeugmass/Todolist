@@ -9,13 +9,14 @@ import {
   onSnapshot, query, orderBy, serverTimestamp, writeBatch, increment, deleteField, arrayUnion, Timestamp
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { getMessaging, getToken, onMessage, isSupported } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging.js";
+import { initializeAppCheck, ReCaptchaEnterpriseProvider } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app-check.js";
 import { firebaseConfig } from "./firebase-config.js";
 
 // Web Push (bildirim) genel anahtarı — gizli değildir.
 const VAPID_KEY = "BGqR76axu5G6VDL1SxXPF4MMDfkF1vzHgGBe8rvr9n01Q0Gl-t3w4jXEtlqDn4wNGI22K1LKHOyvyKPl9mH5-ls";
 
 // Sürüm — her güncellemede artır (menüde altta gösterilir; güncelleme takibi için).
-const APP_VERSION = "6 · 2026-09-27";
+const APP_VERSION = "7 · 2026-09-27";
 
 // Cihazın saat dilimi (IANA, örn. "Europe/Paris"). Görevlere yazılır ki sunucu tekrar
 // hesabını doğru yere göre yapsın (kullanıcı hangi ülkedeyse ona göre).
@@ -23,6 +24,13 @@ const TZ = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZon
 
 /* ---------- Firebase ---------- */
 const app = initializeApp(firebaseConfig);
+// App Check: Firebase'e yalnız BU uygulamanın bağlandığını kanıtlar (reCAPTCHA Enterprise).
+// Diğer servislerden ÖNCE başlatılmalı. Sunucuda şimdilik izleme modunda; zorunlu yapılınca
+// sahte istemcilerin istekleri reddedilir. Site anahtarı herkese açıktır, gizli değildir.
+const APPCHECK_SITE_KEY = "6LceYdItAAAAAIC5r5rEiQUP7lfiIlIazEGLfyXB";
+try {
+  initializeAppCheck(app, { provider: new ReCaptchaEnterpriseProvider(APPCHECK_SITE_KEY), isTokenAutoRefreshEnabled: true });
+} catch (e) { console.warn("App Check başlatılamadı:", e); }
 const auth = getAuth(app);
 // iOS/PWA'da güvenilir canlı senkron için: tek-sekme önbelleği + uzun-yoklama transportu.
 const db = initializeFirestore(app, {
@@ -54,6 +62,8 @@ function dbg(msg) {
 }
 const ms = (t) => Math.round(performance.now() - t) + "ms";
 dbg("uygulama başladı");
+// Güvenlik politikası (CSP) bir kaynağı engellerse kaydet → ?debug=1 ile ekranda görünür (teşhis için)
+document.addEventListener("securitypolicyviolation", (e) => dbg(`CSP ENGEL: ${e.violatedDirective} → ${e.blockedURI || "(satır içi)"}`));
 
 /* ---------- Özellik yardımcıları ---------- */
 const LIST_EMOJIS = ["🛒","🍎","🧹","🏠","💊","🎁","📚","💼","🧺","🍽️","🛠️","🚗","✈️","🎉","📌","📝"];
