@@ -72,6 +72,8 @@ test("bebek: boş ad / 41 karakter ad / hatırlatma 5 saat / bozuk doğum tarihi
   await assertFails(setDoc(doc(db, ...babyPath(S, "c3")), baby({ feedReminderHours: 5 })));
   await assertFails(setDoc(doc(db, ...babyPath(S, "c4")), baby({ birthDate: "01.10.2026" })));
   await assertSucceeds(setDoc(doc(db, ...babyPath(S, "c5")), baby({ birthDate: null, feedReminderHours: 0 })));
+  await assertSucceeds(setDoc(doc(db, ...babyPath(S, "c6")), baby({ feedReminderHours: 3.5 })));
+  await assertFails(setDoc(doc(db, ...babyPath(S, "c7")), baby({ feedReminderHours: 2.5 })));
 });
 test("eş bebek belgesini günceller (hatırlatma zamanı) ✓; oluşturanı değiştiremez ✗", async () => {
   await assertSucceeds(updateDoc(doc(as(B), ...babyPath()), { nextFeedAt: NOW + 3 * H, lastFeedAt: NOW, feedReminderHours: 4 }));

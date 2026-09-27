@@ -15,6 +15,8 @@ const ML_CHIPS = [60, 90, 120, 150, 180];
 const DUR_CHIPS = [5, 10, 15, 20, 30];
 const MILK = { breast: "Anne sütü", formula: "Mama" };
 const SIDE = { L: "Sol", R: "Sağ", both: "İki taraf" };
+const REMIND_OPTS = [[0, "Kapalı"], [3, "3 saat"], [3.5, "3,5 saat"], [4, "4 saat"]]; // kurallarla aynı
+const fmtH = (h) => String(h).replace(".", ","); // 3.5 → "3,5"
 const MAX_BREAST_MS = 6 * HOUR;   // kurallarla aynı üst sınır
 const FUTURE_SLACK = 5 * MIN;     // saat farkları için küçük tolerans
 
@@ -227,10 +229,10 @@ export function createBabyTracker(ctx) {
   function reminderText() {
     const h = baby.feedReminderHours || 0;
     if (!h) return "⏰ Hatırlatma kapalı — açmak için dokun";
-    if (baby.activeTimer) return `⏰ Emzirme bitince ${h} saatlik hatırlatma kurulur`;
-    if (!lastFeed) return `⏰ Hatırlatma: ilk beslenmeden ${h} saat sonra`;
+    if (baby.activeTimer) return `⏰ Emzirme bitince ${fmtH(h)} saatlik hatırlatma kurulur`;
+    if (!lastFeed) return `⏰ Hatırlatma: ilk beslenmeden ${fmtH(h)} saat sonra`;
     const next = lastFeed.at + h * HOUR;
-    return next > Date.now() ? `⏰ Sonraki hatırlatma ${hhmm(next)} (${h} saat)` : `⏰ Beslenme zamanı geçti (${hhmm(next)})`;
+    return next > Date.now() ? `⏰ Sonraki hatırlatma ${hhmm(next)} (${fmtH(h)} saat)` : `⏰ Beslenme zamanı geçti (${hhmm(next)})`;
   }
 
   function summaryCard() {
@@ -329,7 +331,7 @@ export function createBabyTracker(ctx) {
     name.placeholder = "Bebeğin adı (takma ad yeterli)";
     const birth = el("input"); birth.type = "date";
     const seg = el("div", "bb-seg");
-    [[0, "Kapalı"], [3, "3 saat"], [4, "4 saat"]].forEach(([v, t]) => { const b = btn("", t); b.dataset.v = v; seg.append(b); });
+    REMIND_OPTS.forEach(([v, t]) => { const b = btn("", t); b.dataset.v = v; seg.append(b); });
     let rem = 3;
     wireSeg(seg, rem, (v) => { rem = +v; });
     const err = el("p", "hint err");
@@ -555,7 +557,7 @@ export function createBabyTracker(ctx) {
         <div class="field-label">Doğum tarihi (isteğe bağlı)</div>
         <input id="s-birth" type="date" />
         <div class="field-label">Beslenme hatırlatması</div>
-        <div class="bb-seg" id="s-rem"><button type="button" data-v="0">Kapalı</button><button type="button" data-v="3">3 saat</button><button type="button" data-v="4">4 saat</button></div>
+        <div class="bb-seg" id="s-rem">${REMIND_OPTS.map(([v, t]) => `<button type="button" data-v="${v}">${t}</button>`).join("")}</div>
         <p class="hint">Son beslenmenin başlangıcından bu kadar süre sonra ikinizin telefonuna bildirim gelir. Emzirme sürerken bildirim gönderilmez.</p>`,
       okText: "Kaydet",
       onOk: () => {

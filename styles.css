@@ -339,7 +339,7 @@ input:focus { border-color: var(--accent); }
 .bb-amount-val { flex: 1; display: flex; align-items: baseline; justify-content: center; gap: 4px; }
 #modal-body .bb-amount-val input { width: 120px; margin: 0; padding: 4px; border: none; background: transparent; text-align: center; font-size: 38px; font-weight: 700; }
 .bb-chips, .bb-seg { display: flex; gap: 6px; margin-bottom: 8px; }
-.bb-chips button, .bb-seg button { flex: 1; padding: 10px 6px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); font-size: 14px; font-weight: 600; }
+.bb-chips button, .bb-seg button { flex: 1; min-width: 0; white-space: nowrap; padding: 10px 3px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); font-size: 14px; font-weight: 600; }
 .bb-chips button.sel, .bb-seg button.sel { background: var(--accent); color: var(--accent-contrast); border-color: var(--accent); }
 .bb-bigbtns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .bb-bigbtn { padding: 26px 8px; border-radius: 16px; background: var(--accent); color: var(--accent-contrast); font-size: 18px; font-weight: 700; }

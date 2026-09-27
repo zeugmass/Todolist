@@ -176,7 +176,7 @@ exports.sendReminders = onSchedule(
         const p = b.lastFeedAt ? partsInTz(b.lastFeedAt, b.tz || DEFAULT_TZ) : null;
         const hours = b.feedReminderHours || 3;
         const body = p
-          ? `Son beslenme ${String(p.h).padStart(2, "0")}:${String(p.mi).padStart(2, "0")} (${hours} saat önce)`
+          ? `Son beslenme ${String(p.h).padStart(2, "0")}:${String(p.mi).padStart(2, "0")} (${String(hours).replace(".", ",")} saat önce)`
           : "Beslenme zamanı geldi";
         try {
           const resp = await getMessaging().sendEachForMulticast({

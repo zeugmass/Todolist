@@ -91,7 +91,7 @@ service cloud.firestore {
           && d.name is string && d.name.size() >= 1 && d.name.size() <= 40
           && (!('birthDate' in d) || d.birthDate == null
               || (d.birthDate is string && d.birthDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')))
-          && d.feedReminderHours in [0, 3, 4]
+          && d.feedReminderHours in [0, 3, 3.5, 4]
           && (!('lastFeedAt' in d) || d.lastFeedAt == null || d.lastFeedAt is int)
           && (!('nextFeedAt' in d) || d.nextFeedAt == null || d.nextFeedAt is int)
           && (!('nextFeedNotifiedFor' in d) || d.nextFeedNotifiedFor == null || d.nextFeedNotifiedFor is int)
