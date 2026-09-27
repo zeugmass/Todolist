@@ -14,7 +14,7 @@ const db = getFirestore();
 
 const DAY = 86400000;
 // Görevde saat dilimi (tz) yoksa varsayılan. Uygulama her görevin tz'sini yazıyor;
-// bu yalnızca eski (tz'siz) görevler için. Kullanıcı Fransa'da olduğundan Europe/Paris.
+// bu yalnızca eski (tz'siz) görevler için.
 const DEFAULT_TZ = "Europe/Paris";
 
 // Bir UTC anının, verilen IANA saat diliminde tarih/saat parçaları (DST dahil, doğru).
@@ -137,7 +137,7 @@ exports.sendReminders = onSchedule(
 
     // 2) TEKRAR İLERLETME — geçmiş güne kalmış tekrarlayanları bugüne al.
     // Her görev KENDİ saat dilimine (t.tz) göre değerlendirilir; "bugün"ün sınırı
-    // görevi kuran kişinin bulunduğu yere göre belirlenir (Fransa, Türkiye, vb.).
+    // görevi kuran kişinin bulunduğu yere göre belirlenir.
     const rollSnap = await db.collectionGroup("todos")
       .where("dueAt", ">", now - 40 * DAY)
       .where("dueAt", "<", now)

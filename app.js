@@ -6,7 +6,7 @@ import {
 import {
   initializeFirestore, persistentLocalCache, persistentSingleTabManager,
   collection, doc, addDoc, setDoc, updateDoc, deleteDoc, getDoc, getDocs,
-  onSnapshot, query, orderBy, serverTimestamp, writeBatch, increment, deleteField, arrayUnion
+  onSnapshot, query, orderBy, serverTimestamp, writeBatch, increment, deleteField, arrayUnion, Timestamp
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { getMessaging, getToken, onMessage, isSupported } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging.js";
 import { firebaseConfig } from "./firebase-config.js";
@@ -15,7 +15,7 @@ import { firebaseConfig } from "./firebase-config.js";
 const VAPID_KEY = "BGqR76axu5G6VDL1SxXPF4MMDfkF1vzHgGBe8rvr9n01Q0Gl-t3w4jXEtlqDn4wNGI22K1LKHOyvyKPl9mH5-ls";
 
 // Sürüm — her güncellemede artır (menüde altta gösterilir; güncelleme takibi için).
-const APP_VERSION = "5 · 2026-08-30";
+const APP_VERSION = "6 · 2026-09-27";
 
 // Cihazın saat dilimi (IANA, örn. "Europe/Paris"). Görevlere yazılır ki sunucu tekrar
 // hesabını doğru yere göre yapsın (kullanıcı hangi ülkedeyse ona göre).
@@ -282,14 +282,13 @@ function startUserDoc() {
   }, () => {});
 }
 
+// Kişisel alan: yalnız sahibi. Davet kodu YOK (kimse katılamaz).
 async function createPersonalSpace(makeActive) {
   const spaceRef = doc(collection(db, "spaces"));
   const sid = spaceRef.id;
-  const code = genCode();
   const batch = writeBatch(db);
-  batch.set(spaceRef, { ownerUid: currentUser.uid, inviteCode: code, shared: false, createdAt: serverTimestamp() });
+  batch.set(spaceRef, { ownerUid: currentUser.uid, shared: false, createdAt: serverTimestamp() });
   batch.set(doc(db, "spaces", sid, "members", currentUser.uid), { email: currentUser.email || "", joinedAt: serverTimestamp() });
-  batch.set(doc(db, "invites", code), { spaceId: sid, createdAt: serverTimestamp() });
   const userData = { email: currentUser.email || "", spaces: { [sid]: { shared: false } } };
   if (makeActive) userData.spaceId = sid;
   batch.set(doc(db, "users", currentUser.uid), userData, { merge: true });
@@ -333,7 +332,10 @@ async function healDuplicatePersonals() {
       const sd = (await getDoc(doc(db, "spaces", r.sid))).data();
       const batch = writeBatch(db);
       batch.delete(doc(db, "spaces", r.sid, "members", currentUser.uid));
-      if (sd && sd.inviteCode) batch.delete(doc(db, "invites", sd.inviteCode));
+      if (sd && sd.inviteCode) { // eski (legacy) kod; yalnız hâlâ varsa sil (yoksa kural reddeder)
+        const inv = await getDoc(doc(db, "invites", sd.inviteCode)).catch(() => null);
+        if (inv && inv.exists()) batch.delete(doc(db, "invites", sd.inviteCode));
+      }
       batch.delete(doc(db, "spaces", r.sid));
       batch.update(doc(db, "users", currentUser.uid), { ["spaces." + r.sid]: deleteField() });
       await batch.commit();
@@ -344,19 +346,38 @@ async function healDuplicatePersonals() {
   renderSpaceSwitcher();
 }
 
-// Paylaşımlı alanı garanti et (davet için); yoksa oluştur ve ona geç
+// Paylaşımlı alanı garanti et (davet için); yoksa oluştur ve ona geç.
+// Davet kodu burada DEĞİL, "Eşini davet et"e basınca createInvite() ile üretilir.
 async function ensureSharedSpace() {
   const spaceRef = doc(collection(db, "spaces"));
   const sid = spaceRef.id;
-  const code = genCode();
   const batch = writeBatch(db);
-  batch.set(spaceRef, { ownerUid: currentUser.uid, inviteCode: code, shared: true, createdAt: serverTimestamp() });
+  batch.set(spaceRef, { ownerUid: currentUser.uid, shared: true, createdAt: serverTimestamp() });
   batch.set(doc(db, "spaces", sid, "members", currentUser.uid), { email: currentUser.email || "", joinedAt: serverTimestamp() });
-  batch.set(doc(db, "invites", code), { spaceId: sid, createdAt: serverTimestamp() });
   batch.set(doc(db, "users", currentUser.uid), { spaceId: sid, spaces: { [sid]: { shared: true } } }, { merge: true });
   await batch.commit();
   switchToSpace(sid);
-  return { sid, code };
+  return sid;
+}
+
+// Ortak alan için TAZE davet kodu: 8 karakter, 24 saat geçerli, tek kullanımlık.
+// Alanın eski kodu (varsa) silinir; aynı anda yalnız bir geçerli kod olur.
+const INVITE_TTL_MS = 24 * 3600000;
+async function createInvite(sid) {
+  const code = genCode();
+  const old = (await getDoc(doc(db, "spaces", sid))).data()?.inviteCode;
+  const batch = writeBatch(db);
+  if (old && old !== code) {
+    const oldInv = await getDoc(doc(db, "invites", old)).catch(() => null);
+    if (oldInv && oldInv.exists()) batch.delete(doc(db, "invites", old));
+  }
+  batch.set(doc(db, "invites", code), {
+    spaceId: sid, createdBy: currentUser.uid, createdAt: serverTimestamp(),
+    expiresAt: Timestamp.fromMillis(Date.now() + INVITE_TTL_MS)
+  });
+  batch.update(doc(db, "spaces", sid), { inviteCode: code });
+  await batch.commit();
+  return code;
 }
 
 async function switchActiveSpace(sid) {
@@ -866,13 +887,13 @@ $("btn-invite").addEventListener("click", async () => {
   // Paylaşımlı (Ortak) alanı garanti et — Kişisel alanı asla paylaşma
   let sid = null, code = null;
   for (const [id, p] of userSpaces) if (p.shared) { sid = id; break; }
-  if (!sid) { const r = await ensureSharedSpace().catch(() => null); if (r) { sid = r.sid; code = r.code; } }
+  if (!sid) sid = await ensureSharedSpace().catch(() => null);
   else if (sid !== spaceId) await switchActiveSpace(sid);
-  if (!code && sid) { try { code = (await getDoc(doc(db, "spaces", sid))).data()?.inviteCode; } catch {} }
-  code = code || spaceData?.inviteCode || "…";
+  if (sid) code = await createInvite(sid).catch((e) => { dbg("davet HATA: " + (e.code || e.message)); return null; });
+  if (!code) { toast("Davet kodu oluşturulamadı. İnternetini kontrol et."); return; }
   openModal({
     title: "Eşini davet et",
-    bodyHTML: `<div class="invite-code" id="m-invite">${code}</div><p class="hint">Bu kod <b>Ortak</b> alan içindir. Eşin <b>“Listeye katıl”</b> deyip bu kodu girsin. Bağlandıktan sonra Ortak alandaki listeler ikinizde anlık görünür. <b>Kişisel alanın</b> özel kalır, eşin göremez.</p>`,
+    bodyHTML: `<div class="invite-code" id="m-invite">${code}</div><p class="hint">Bu kod <b>Ortak</b> alan içindir, <b>24 saat geçerli</b> ve <b>tek kullanımlıktır</b>. Eşin <b>“Listeye katıl”</b> deyip bu kodu girsin. Bağlandıktan sonra Ortak alandaki listeler ikinizde anlık görünür. <b>Kişisel alanın</b> özel kalır, eşin göremez.</p>`,
     okText: "Kopyala",
     onOk: async (btn) => {
       try { await navigator.clipboard.writeText(code); btn.textContent = "Kopyalandı ✓"; }
@@ -887,7 +908,7 @@ $("btn-join-list").addEventListener("click", () => {
   closeDrawer();
   openModal({
     title: "Listeye katıl",
-    bodyHTML: '<input id="m-code" type="text" autocapitalize="characters" placeholder="Davet kodu" style="text-transform:uppercase;letter-spacing:3px;text-align:center;font-size:22px" /><p class="hint">Eşinden aldığın kodu gir. Ortak alana katılırsın. <b>Kişisel alanın durmaya devam eder</b> — üstteki geçişten her ikisine erişebilirsin.</p>',
+    bodyHTML: '<input id="m-code" type="text" autocapitalize="characters" autocomplete="off" maxlength="8" placeholder="Davet kodu" style="text-transform:uppercase;letter-spacing:3px;text-align:center;font-size:22px" /><p class="hint">Eşinden aldığın kodu gir. Ortak alana katılırsın. <b>Kişisel alanın durmaya devam eder</b> — üstteki geçişten her ikisine erişebilirsin.</p>',
     okText: "Katıl",
     onOk: async (btn) => {
       const code = $("m-code").value.trim().toUpperCase();
@@ -907,11 +928,14 @@ async function joinSpace(code) {
     const inv = await getDoc(doc(db, "invites", code));
     dbg(`katıl: kod arandı ${ms(tGet)} (bulundu:${inv.exists()})`);
     if (!inv.exists()) return "Kod bulunamadı. Kontrol et.";
-    const newSpaceId = inv.data().spaceId;
+    const { spaceId: newSpaceId, expiresAt } = inv.data();
+    if (!expiresAt || expiresAt.toMillis() <= Date.now()) return "Bu kodun süresi dolmuş. Eşinden yeni kod iste.";
     if (userSpaces.has(newSpaceId)) { switchActiveSpace(newSpaceId); return null; }
     const batch = writeBatch(db);
-    batch.set(doc(db, "spaces", newSpaceId, "members", currentUser.uid), { email: currentUser.email || "", joinedAt: serverTimestamp() });
+    // inviteCode: sunucu kuralı, üyeliği bu geçerli koda karşı doğrular
+    batch.set(doc(db, "spaces", newSpaceId, "members", currentUser.uid), { email: currentUser.email || "", joinedAt: serverTimestamp(), inviteCode: code });
     batch.set(doc(db, "users", currentUser.uid), { spaceId: newSpaceId, spaces: { [newSpaceId]: { shared: true } } }, { merge: true });
+    batch.delete(doc(db, "invites", code)); // tek kullanımlık
     // Kişisel alan silinmez; üstteki geçişten erişilir
     const tCommit = performance.now();
     await batch.commit();
@@ -948,10 +972,9 @@ async function disconnectSpace() {
     batch.delete(doc(db, "spaces", leaving, "members", currentUser.uid));
     const userUpd = { spaceId: null, ["spaces." + leaving]: deleteField() };
     if (!personal) { // kişisel alan yoksa oluştur
-      const sr = doc(collection(db, "spaces")); personal = sr.id; const code = genCode();
-      batch.set(sr, { ownerUid: currentUser.uid, inviteCode: code, shared: false, createdAt: serverTimestamp() });
+      const sr = doc(collection(db, "spaces")); personal = sr.id;
+      batch.set(sr, { ownerUid: currentUser.uid, shared: false, createdAt: serverTimestamp() });
       batch.set(doc(db, "spaces", personal, "members", currentUser.uid), { email: currentUser.email || "", joinedAt: serverTimestamp() });
-      batch.set(doc(db, "invites", code), { spaceId: personal, createdAt: serverTimestamp() });
       userUpd["spaces." + personal] = { shared: false };
     }
     userUpd.spaceId = personal;
@@ -1058,10 +1081,17 @@ function cleanupAll() {
   renderHeader();
 }
 
+// Davet kodu: 8 karakter, kriptografik rastgele (Math.random DEĞİL), sapmasız.
+// Karışan karakterler (0/O, 1/I/L) yok. Kural tarafı aynı alfabeyi doğrular.
 function genCode() {
-  const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+  const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // 31 karakter
+  const limit = Math.floor(0x100000000 / chars.length) * chars.length;
+  const buf = new Uint32Array(1);
   let s = "";
-  for (let i = 0; i < 6; i++) s += chars[Math.floor(Math.random() * chars.length)];
+  while (s.length < 8) {
+    crypto.getRandomValues(buf);
+    if (buf[0] < limit) s += chars[buf[0] % chars.length];
+  }
   return s;
 }
 function escapeAttr(s) { return String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }

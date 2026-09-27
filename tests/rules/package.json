@@ -1,0 +1,15 @@
+{
+  "name": "gorevler-rules-tests",
+  "private": true,
+  "type": "module",
+  "description": "firestore.rules için saldırı/izin testleri (emülatörde çalışır, canlı veriye dokunmaz)",
+  "scripts": {
+    "test": "firebase emulators:exec --only firestore --project demo-todo \"node --test\""
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^4.0.1",
+    "firebase": "^11.0.0",
+    "firebase-tools": "^13.35.1"
+  },
+  "comment": "firebase-tools 13 yerel olarak sabitlendi: v14+ emülatör için Java 21 istiyor, bu makinede Java 17 var."
+}

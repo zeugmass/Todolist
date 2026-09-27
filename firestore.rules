@@ -2,41 +2,76 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    function signedIn() { return request.auth != null; }
+    // ── İZİNLİ KİŞİLER ────────────────────────────────────────────────────────
+    // Uygulamayı YALNIZ bu hesaplar kullanabilir. Başka hiçbir hesap (yeni açılsa,
+    // davet kodu ele geçirse bile) hiçbir belgeyi okuyamaz/yazamaz.
+    // Yeni kişi eklemek: Firebase Auth'taki uid'sini buraya ekle + rules deploy.
+    function allowed() {
+      // (Bu repo herkese açık: burada e-posta/isim YAZMAYIN, yalnız uid.)
+      return request.auth != null && request.auth.uid in [
+        'oBakqJgdSzbm6HL1JBWcGTsI1kJ2', // hesap 1 (sahip)
+        '7GBK0HeVh3cJyVrWanXUfnQHJTy2'  // hesap 2 (eş)
+      ];
+    }
+    function spacePath(sid) { return /databases/$(database)/documents/spaces/$(sid); }
+    function memberPath(sid, uid) { return /databases/$(database)/documents/spaces/$(sid)/members/$(uid); }
+    function invitePath(code) { return /databases/$(database)/documents/invites/$(code); }
 
-    // Kullanıcı belgesi (hangi ortak alana ait olduğu dahil)
+    // Kullanıcı belgesi: yalnız kendisi
     match /users/{uid} {
-      allow read, write: if signedIn() && request.auth.uid == uid;
+      allow read, write: if allowed() && request.auth.uid == uid;
     }
 
     // Davet kodları: code -> spaceId
-    // GÜVENLİK: yalnızca "get" (kodu bilen tek belgeyi okur); "list" KAPALI
-    // (aksi halde saldırgan tüm davetleri listeleyip her alanın spaceId'sini öğrenir).
+    // - "list" KAPALI (kodlar listelenemez), yalnız kodu bilen tek belgeyi "get" eder.
+    // - Yalnız ORTAK alan için, o alanın üyesi tarafından, 8 karakterlik, EN FAZLA
+    //   ~24 saat geçerli kod oluşturulabilir. Katılınca silinir (tek kullanımlık).
     match /invites/{code} {
-      allow get:    if signedIn();
-      allow create: if signedIn();
-      allow delete: if signedIn()
-        && get(/databases/$(database)/documents/spaces/$(resource.data.spaceId)).data.ownerUid == request.auth.uid;
+      allow get: if allowed();
+      allow create: if allowed()
+        && code.matches('^[ABCDEFGHJKMNPQRSTUVWXYZ2-9]{8}$')
+        && request.resource.data.keys().hasOnly(['spaceId', 'createdBy', 'createdAt', 'expiresAt'])
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.expiresAt is timestamp
+        && request.resource.data.expiresAt > request.time
+        && request.resource.data.expiresAt < request.time + duration.value(25, 'h')
+        && getAfter(spacePath(request.resource.data.spaceId)).data.shared == true
+        && existsAfter(memberPath(request.resource.data.spaceId, request.auth.uid));
+      // Silme: o alanın üyesi (sahip temizliği) ya da aynı işlemde üye olan (tek kullanım)
+      allow delete: if allowed()
+        && (exists(memberPath(resource.data.spaceId, request.auth.uid))
+            || existsAfter(memberPath(resource.data.spaceId, request.auth.uid)));
       allow update: if false;
     }
 
-    // Ortak alanlar (space): içindeki tüm listeler üyeler arasında paylaşılır
+    // Alanlar (space): içindeki tüm listeler üyeler arasında paylaşılır
     match /spaces/{spaceId} {
       function isMember() {
-        return signedIn()
-          && exists(/databases/$(database)/documents/spaces/$(spaceId)/members/$(request.auth.uid));
+        return allowed() && exists(memberPath(spaceId, request.auth.uid));
       }
 
       allow read:   if isMember();
-      allow create: if signedIn() && request.resource.data.ownerUid == request.auth.uid;
-      allow update: if isMember();
+      allow create: if allowed() && request.resource.data.ownerUid == request.auth.uid;
+      // Sahiplik (ownerUid) hiçbir zaman değiştirilemez
+      allow update: if isMember() && request.resource.data.ownerUid == resource.data.ownerUid;
       allow delete: if isMember() && resource.data.ownerUid == request.auth.uid;
 
-      // Üyeler: kişi yalnızca kendini ekler/çıkarır
+      // Üyeler: kişi yalnız KENDİNİ ekler/çıkarır. Eklemek için ya alanın sahibi
+      // olmalı (alanı oluştururken) ya da bu alana ait, süresi dolmamış bir davet
+      // kodu sunmalı. (Yalnız alan kimliğini bilmek artık katılmaya YETMEZ.)
       match /members/{memberUid} {
-        allow read:   if isMember() || (signedIn() && memberUid == request.auth.uid);
-        allow create: if signedIn() && memberUid == request.auth.uid;
-        allow delete: if signedIn() && memberUid == request.auth.uid;
+        allow read:   if isMember() || (allowed() && memberUid == request.auth.uid);
+        allow create: if allowed() && memberUid == request.auth.uid
+          && request.resource.data.keys().hasOnly(['email', 'joinedAt', 'inviteCode'])
+          && (
+            getAfter(spacePath(spaceId)).data.ownerUid == request.auth.uid
+            || (
+              request.resource.data.inviteCode is string
+              && get(invitePath(request.resource.data.inviteCode)).data.spaceId == spaceId
+              && get(invitePath(request.resource.data.inviteCode)).data.expiresAt > request.time
+            )
+          );
+        allow delete: if allowed() && memberUid == request.auth.uid;
         allow update: if false;
       }
 
@@ -53,5 +88,7 @@ service cloud.firestore {
         }
       }
     }
+
+    // Yukarıda açıkça izin verilmeyen HER ŞEY reddedilir (Firestore varsayılanı).
   }
 }
