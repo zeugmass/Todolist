@@ -1,22 +1,24 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
-  getAuth, onAuthStateChanged, createUserWithEmailAndPassword,
-  signInWithEmailAndPassword, signOut, setPersistence, browserLocalPersistence
+  initializeAuth, onAuthStateChanged, createUserWithEmailAndPassword,
+  signInWithEmailAndPassword, signOut, browserLocalPersistence, indexedDBLocalPersistence, connectAuthEmulator
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   initializeFirestore, persistentLocalCache, persistentSingleTabManager,
   collection, doc, addDoc, setDoc, updateDoc, deleteDoc, getDoc, getDocs,
-  onSnapshot, query, orderBy, serverTimestamp, writeBatch, increment, deleteField, arrayUnion, Timestamp
+  onSnapshot, query, orderBy, serverTimestamp, writeBatch, increment, deleteField, arrayUnion, Timestamp,
+  connectFirestoreEmulator
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { getMessaging, getToken, onMessage, isSupported } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging.js";
 import { initializeAppCheck, ReCaptchaEnterpriseProvider } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app-check.js";
 import { firebaseConfig } from "./firebase-config.js";
+import { createBabyTracker } from "./baby.js";
 
 // Web Push (bildirim) genel anahtarı — gizli değildir.
 const VAPID_KEY = "BGqR76axu5G6VDL1SxXPF4MMDfkF1vzHgGBe8rvr9n01Q0Gl-t3w4jXEtlqDn4wNGI22K1LKHOyvyKPl9mH5-ls";
 
 // Sürüm — her güncellemede artır (menüde altta gösterilir; güncelleme takibi için).
-const APP_VERSION = "7 · 2026-09-27";
+const APP_VERSION = "8 · 2026-09-27";
 
 // Cihazın saat dilimi (IANA, örn. "Europe/Paris"). Görevlere yazılır ki sunucu tekrar
 // hesabını doğru yere göre yapsın (kullanıcı hangi ülkedeyse ona göre).
@@ -31,13 +33,22 @@ const APPCHECK_SITE_KEY = "6LceYdItAAAAAIC5r5rEiQUP7lfiIlIazEGLfyXB";
 try {
   initializeAppCheck(app, { provider: new ReCaptchaEnterpriseProvider(APPCHECK_SITE_KEY), isTokenAutoRefreshEnabled: true });
 } catch (e) { console.warn("App Check başlatılamadı:", e); }
-const auth = getAuth(app);
+// initializeAuth (getAuth DEĞİL): "Google ile giriş" pencere altyapısını (apis.google.com betiği +
+// gizli iframe) HİÇ yüklemez — yalnız e-posta/şifre kullanıyoruz, dış betik az = saldırı yüzeyi az.
+// Oturum önce localStorage'da (önceki setPersistence buraya taşımıştı), yoksa IndexedDB'de aranır.
+const auth = initializeAuth(app, { persistence: [browserLocalPersistence, indexedDBLocalPersistence] });
 // iOS/PWA'da güvenilir canlı senkron için: tek-sekme önbelleği + uzun-yoklama transportu.
 const db = initializeFirestore(app, {
   localCache: persistentLocalCache({ tabManager: persistentSingleTabManager({ forceOwnership: true }) }),
   experimentalForceLongPolling: true
 });
-setPersistence(auth, browserLocalPersistence).catch(() => {});
+// YEREL GELİŞTİRME: yalnız localhost'ta ve adreste ?emu varsa bilgisayardaki SAHTE Firebase'e
+// (emülatör) bağlanır. Canlı sitede (github.io) bu koşul asla sağlanmaz.
+const USE_EMULATOR = location.hostname === "localhost" && new URLSearchParams(location.search).has("emu");
+if (USE_EMULATOR) {
+  connectAuthEmulator(auth, "http://127.0.0.1:9099", { disableWarnings: true });
+  connectFirestoreEmulator(db, "127.0.0.1", 8080);
+}
 
 /* ---------- Yardımcılar ---------- */
 const $ = (id) => document.getElementById(id);
@@ -192,6 +203,40 @@ let todosUnsub = null;
 let currentTodos = [];
 let sortable = null;
 let undoTimer = null;
+
+/* ================================================================
+   BEBEK TAKİBİ — görünüm geçişi (asıl mantık baby.js'te)
+   Bebek verisi her zaman ORTAK alanda durur (eşinle paylaşılır).
+================================================================ */
+let viewMode = "lists"; // "lists" | "baby"
+const baby = createBabyTracker({
+  db, getUser: () => currentUser, $, toast, showSnackbar, openModal, closeModal, modalError, dbg,
+  personColor, TZ, onTitleChange: () => renderHeader()
+});
+function sharedSpaceId() { for (const [id, p] of userSpaces) if (p.shared) return id; return null; }
+function applyViewMode() {
+  const isBaby = viewMode === "baby";
+  $("baby-view").classList.toggle("hidden", !isBaby);
+  $("todo-scroll").classList.toggle("hidden", isBaby);
+  if (isBaby) hideSuggest();
+  renderHeader(); renderLists(); updateEmptyStates();
+}
+async function enterBabyMode() {
+  const sid = sharedSpaceId();
+  if (!sid) { toast("Önce eşinle ortak alan kur (menü → Eşini davet et)."); return; }
+  if (sid !== spaceId) await switchActiveSpace(sid);
+  viewMode = "baby";
+  localStorage.setItem("view", "baby"); // uygulama yeniden açılınca doğrudan bebek ekranı
+  baby.start(sid);
+  applyViewMode();
+}
+function exitBabyMode() {
+  if (viewMode !== "baby") return;
+  viewMode = "lists";
+  localStorage.removeItem("view");
+  baby.stop();
+  applyViewMode();
+}
 
 /* ================================================================
    KİMLİK DOĞRULAMA
@@ -432,6 +477,11 @@ function switchToSpace(newSpaceId) {
   activeListId = localStorage.getItem("active:" + spaceId) || null;
   renderSpaceSwitcher();
   establishSpaceListeners();
+  // Bebek ekranı: kişisel alana geçilince kapanır; açılışta (son kullanım bebekse) geri gelir
+  if (viewMode === "baby" && !spaceShared) exitBabyMode();
+  else if (viewMode !== "baby" && spaceShared && localStorage.getItem("view") === "baby") {
+    viewMode = "baby"; baby.start(spaceId); applyViewMode();
+  }
 }
 
 // Alan seviyesindeki dinleyicileri (yeniden) kurar. Hata olursa kendini onarır.
@@ -509,6 +559,7 @@ function setActiveList(listId) {
 }
 
 function renderHeader() {
+  if (viewMode === "baby") { $("list-title").textContent = baby.title(); return; }
   const l = activeListId ? lists.get(activeListId) : null;
   $("list-title").textContent = l ? ((l.emoji ? l.emoji + " " : "") + l.title) : "Görevler";
 }
@@ -526,22 +577,34 @@ function setConnStatus(count) {
 function renderLists() {
   const ul = $("lists-ul");
   ul.innerHTML = "";
+  // En üstte bebek takibi (ortak alan varsa); dokununca ortak alana geçip bebek ekranını açar
+  if (sharedSpaceId()) {
+    const li = document.createElement("li");
+    li.className = "list-row baby-row" + (viewMode === "baby" ? " active" : "");
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = "👶 Bebek takibi";
+    li.appendChild(name);
+    li.addEventListener("click", () => { closeDrawer(); enterBabyMode(); });
+    ul.appendChild(li);
+  }
   [...lists.values()].forEach((l) => {
     const li = document.createElement("li");
-    li.className = "list-row" + (l.id === activeListId ? " active" : "");
+    li.className = "list-row" + (viewMode !== "baby" && l.id === activeListId ? " active" : "");
     const name = document.createElement("span");
     name.className = "name";
     name.textContent = (l.emoji ? l.emoji + " " : "") + (l.title || "(başlıksız)");
     li.appendChild(name);
-    li.addEventListener("click", () => { setActiveList(l.id); closeDrawer(); });
+    li.addEventListener("click", () => { exitBabyMode(); setActiveList(l.id); closeDrawer(); });
     ul.appendChild(li);
   });
 }
 
 function updateEmptyStates() {
   const hasList = lists.size > 0;
-  $("no-list-state").classList.toggle("hidden", hasList);
-  $("add-form").classList.toggle("hidden", !hasList);
+  const isBaby = viewMode === "baby";
+  $("no-list-state").classList.toggle("hidden", hasList || isBaby);
+  $("add-form").classList.toggle("hidden", !hasList || isBaby);
   const noTodos = hasList && !!activeListId && currentTodos.length === 0;
   $("empty-state").classList.toggle("hidden", !noTodos);
 }
@@ -819,17 +882,18 @@ $("drawer-overlay").addEventListener("click", closeDrawer);
 
 function openMenu() { show($("menu-overlay")); show($("list-menu")); }
 function closeMenu() { hide($("menu-overlay")); hide($("list-menu")); }
-$("btn-menu").addEventListener("click", () => { if (activeListId) openMenu(); });
+$("btn-menu").addEventListener("click", () => { if (viewMode === "baby") baby.openSettings(); else if (activeListId) openMenu(); });
 $("menu-overlay").addEventListener("click", closeMenu);
 $("btn-refresh").addEventListener("click", () => {
   const b = $("btn-refresh");
   b.classList.add("spinning");
-  manualResync();
+  if (viewMode === "baby") { baby.resync(); toast("Yenilendi"); } else manualResync();
   setTimeout(() => b.classList.remove("spinning"), 700);
 });
 $("completed-header").addEventListener("click", () => { completedCollapsed = !completedCollapsed; renderTodos(); });
 
-function openModal({ title, bodyHTML, okText = "Tamam", okDanger = false, onOk, showCancel = true }) {
+// autofocus:false → ilk kutuya odaklanma (ör. iPhone'da saat seçicinin kendiliğinden açılmasını önler)
+function openModal({ title, bodyHTML, okText = "Tamam", okDanger = false, onOk, showCancel = true, autofocus = true }) {
   $("modal-title").textContent = title;
   $("modal-body").innerHTML = bodyHTML || "";
   const actions = $("modal-actions");
@@ -851,7 +915,7 @@ function openModal({ title, bodyHTML, okText = "Tamam", okDanger = false, onOk, 
   });
   actions.appendChild(ok);
   show($("modal-overlay"));
-  const firstInput = $("modal-body").querySelector("input");
+  const firstInput = autofocus ? $("modal-body").querySelector("input") : null;
   if (firstInput) {
     setTimeout(() => firstInput.focus(), 50);
     firstInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); ok.click(); } });
@@ -1016,7 +1080,7 @@ $("mi-rename").addEventListener("click", () => {
   });
   wireEmojiGrid();
 });
-$("list-title").addEventListener("click", () => { if (activeListId) $("mi-rename").click(); });
+$("list-title").addEventListener("click", () => { if (viewMode === "baby") baby.openSettings(); else if (activeListId) $("mi-rename").click(); });
 
 /* ---- Menü: tamamlananları temizle ---- */
 $("mi-clear-done").addEventListener("click", () => {
@@ -1077,6 +1141,8 @@ function toast(text) {
    TEMİZLİK / YARDIMCI
 ================================================================ */
 function cleanupAll() {
+  baby.stop(); viewMode = "lists";
+  $("baby-view").classList.add("hidden"); $("todo-scroll").classList.remove("hidden");
   if (userDocUnsub) { userDocUnsub(); userDocUnsub = null; }
   if (userSpacesUnsub) { userSpacesUnsub(); userSpacesUnsub = null; }
   userSpaces.clear(); spaceShared = false;

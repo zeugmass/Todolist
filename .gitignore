@@ -4,3 +4,6 @@ HANDOFF.md
 _yedek/
 # Yerel araç ayarları
 .claude/
+# Yerel test sayfası (emülatör izinli CSP)
+index.dev.html
+*-debug.log

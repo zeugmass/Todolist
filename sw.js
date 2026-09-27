@@ -1,9 +1,9 @@
 // Görevler PWA - service worker
 // Kod güncellenince sürümü artır: v2 -> v3 ...
-const CACHE = "gorevler-v7";
+const CACHE = "gorevler-v8";
 
 const APP_SHELL = [
-  "./", "./index.html", "./styles.css", "./app.js", "./firebase-config.js",
+  "./", "./index.html", "./styles.css", "./app.js", "./baby.js", "./firebase-config.js",
   "./firebase-messaging-sw.js", "./manifest.webmanifest", "./icon-192.png",
   "./icon-512.png", "./apple-touch-icon.png", "./favicon-32.png"
 ];
@@ -29,6 +29,8 @@ self.addEventListener("fetch", (e) => {
       url.hostname.includes("firebase") || url.hostname.includes("google.com")) {
     return;
   }
+  // Yerel geliştirmede Firebase emülatörü (127.0.0.1): canlı bağlantıyı önbelleğe alma → bozulur
+  if (url.hostname === "127.0.0.1") return;
 
   // Aynı origin (uygulama dosyaları) + sayfa gezinmesi: ÖNCE AĞ, olmazsa önbellek.
   // Böylece her açılışta en güncel kod gelir; çevrimdışıysa önbellekten çalışır.

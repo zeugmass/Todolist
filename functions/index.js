@@ -157,6 +157,40 @@ exports.sendReminders = onSchedule(
       }
     }
 
-    console.log(`Gönderilen: ${sent}, ilerletilen: ${rolled}`);
+    // 3) BEBEK BESLENME HATIRLATMASI — uygulama bebek belgesine nextFeedAt (= son beslenme +
+    //    3/4 saat) yazar. Emzirme sürüyorsa gönderilmez. Kilit ekranında ad/miktar YOK (gizlilik).
+    // Ayrı try: bu bölüm (ör. dizin henüz hazır değilse) hata verse bile görev hatırlatmaları etkilenmez.
+    let feedSent = 0;
+    try {
+    const feedSnap = await db.collectionGroup("babies")
+      .where("nextFeedAt", ">", now - 30 * 60000)
+      .where("nextFeedAt", "<=", now)
+      .get();
+    for (const bSnap of feedSnap.docs) {
+      const b = bSnap.data();
+      if (!b.nextFeedAt || b.nextFeedNotifiedFor === b.nextFeedAt) continue;
+      if (b.activeTimer) continue; // şu an emziriliyor; bitince yeni zaman kurulur
+      const sid = bSnap.ref.path.split("/")[1]; // spaces/{sid}/babies/{bid}
+      const tokens = await tokensForSpace(sid);
+      if (tokens.length) {
+        const p = b.lastFeedAt ? partsInTz(b.lastFeedAt, b.tz || DEFAULT_TZ) : null;
+        const hours = b.feedReminderHours || 3;
+        const body = p
+          ? `Son beslenme ${String(p.h).padStart(2, "0")}:${String(p.mi).padStart(2, "0")} (${hours} saat önce)`
+          : "Beslenme zamanı geldi";
+        try {
+          const resp = await getMessaging().sendEachForMulticast({
+            tokens,
+            webpush: { headers: { Urgency: "high", TTL: "3600" } },
+            data: { title: "🍼 Beslenme zamanı", body, url: "./", tag: "feed-" + bSnap.id }
+          });
+          feedSent += resp.successCount;
+        } catch (e) { console.error("beslenme bildirimi hatası", e); }
+      }
+      await bSnap.ref.update({ nextFeedNotifiedFor: b.nextFeedAt }).catch(() => {});
+    }
+    } catch (e) { console.error("beslenme hatırlatma adımı hatası", e.message || e); }
+
+    console.log(`Gönderilen: ${sent}, ilerletilen: ${rolled}, beslenme: ${feedSent}`);
   }
 );

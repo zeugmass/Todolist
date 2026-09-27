@@ -291,3 +291,60 @@ input:focus { border-color: var(--accent); }
 .grecaptcha-badge { visibility: hidden !important; }
 .recaptcha-note { text-align: center; font-size: 10px; opacity: .45; margin-top: 4px; line-height: 1.4; }
 .recaptcha-note a { color: inherit; text-decoration: underline; }
+
+/* ===================== BEBEK TAKİBİ ===================== */
+.baby-view {
+  flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  padding: 12px 14px calc(var(--safe-bottom) + 28px);
+  display: flex; flex-direction: column; gap: 12px;
+}
+.list-row.baby-row { font-weight: 600; border-bottom: 1px solid var(--border); border-radius: 10px 10px 0 0; margin-bottom: 4px; }
+.bb-loading { text-align: center; padding: 40px 0; }
+.bb-card { background: var(--surface-2); border-radius: 18px; padding: 16px; }
+.bb-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.bb-label { font-size: 12px; color: var(--muted); font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+.bb-age { font-size: 13px; color: var(--muted); }
+.bb-big { font-size: 30px; font-weight: 700; letter-spacing: -.02em; margin: 4px 0 2px; font-variant-numeric: tabular-nums; }
+.bb-sub { font-size: 15px; color: var(--muted); }
+.bb-total { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.bb-sep { height: 1px; background: var(--border); margin: 14px 0 12px; }
+.bb-remind { display: block; width: 100%; text-align: left; margin-top: 12px; padding: 10px 12px; border-radius: 12px; background: var(--surface); font-size: 14px; }
+.bb-timer { border: 2px solid var(--accent); }
+.bb-clock { font-size: 46px; }
+.bb-timer-actions { display: flex; gap: 8px; margin-top: 10px; }
+.bb-timer-actions button { flex: 1; width: auto; }
+.bb-cancel { display: block; margin: 8px auto 0; font-size: 14px; }
+.bb-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.bb-actions .bb-action:only-child { grid-column: 1 / -1; }
+.bb-action { padding: 22px 8px; border-radius: 18px; background: var(--accent); color: var(--accent-contrast); font-size: 19px; font-weight: 700; }
+.bb-action:active, .bb-bigbtn:active { opacity: .85; }
+.bb-daynav { display: flex; align-items: center; justify-content: space-between; margin-top: 2px; }
+.bb-daynav .icon-btn { font-size: 30px; line-height: 1; }
+.bb-daynav .icon-btn:disabled { opacity: .2; }
+.bb-daylabel { font-weight: 700; padding: 8px 12px; }
+.bb-list { list-style: none; margin: 0; padding: 0; }
+.bb-ev { display: flex; align-items: center; gap: 12px; padding: 12px 4px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.bb-ev:active { background: var(--surface-2); }
+.bb-time { flex: 0 0 auto; width: 48px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.bb-desc { flex: 1; min-width: 0; }
+.bb-note { font-size: 14px; color: var(--muted); overflow-wrap: anywhere; }
+.bb-empty { padding: 18px 4px; text-align: center; }
+.bb-setup h3 { margin: 0 0 6px; }
+.bb-setup input { margin-top: 10px; }
+.bb-setup .btn-primary { margin-top: 16px; }
+.bb-setup .err { color: var(--danger); }
+/* formlar (pencere içi) */
+.bb-amount { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.bb-step { flex: 0 0 auto; width: 56px; height: 56px; border-radius: 50%; background: var(--surface-2); font-size: 28px; font-weight: 600; }
+.bb-amount-val { flex: 1; display: flex; align-items: baseline; justify-content: center; gap: 4px; }
+#modal-body .bb-amount-val input { width: 120px; margin: 0; padding: 4px; border: none; background: transparent; text-align: center; font-size: 38px; font-weight: 700; }
+.bb-chips, .bb-seg { display: flex; gap: 6px; margin-bottom: 8px; }
+.bb-chips button, .bb-seg button { flex: 1; padding: 10px 6px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); font-size: 14px; font-weight: 600; }
+.bb-chips button.sel, .bb-seg button.sel { background: var(--accent); color: var(--accent-contrast); border-color: var(--accent); }
+.bb-bigbtns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.bb-bigbtn { padding: 26px 8px; border-radius: 16px; background: var(--accent); color: var(--accent-contrast); font-size: 18px; font-weight: 700; }
+.bb-del { display: block; margin: 10px auto 0; }
+#modal-body input[type="date"] {
+  width: 100%; padding: 13px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); color: var(--text); font-size: 16px; margin-bottom: 8px;
+}

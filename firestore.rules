@@ -75,6 +75,71 @@ service cloud.firestore {
         allow update: if false;
       }
 
+      // ── BEBEK TAKİBİ ────────────────────────────────────────────────────────
+      // Yalnız alan üyeleri. Her kayıt biçim olarak doğrulanır (izin verilmeyen
+      // alan, sahte yazar, saçma miktar/süre, uzak gelecek tarihi REDDEDİLİR).
+      function validTimer(t) {
+        return t == null || (t is map
+          && t.keys().hasOnly(['kind', 'side', 'startedAt', 'startedBy'])
+          && t.kind == 'breast' && t.side in ['L', 'R']
+          && t.startedAt is int && t.startedBy is string);
+      }
+      function validBaby(d) {
+        return d.keys().hasOnly(['name', 'birthDate', 'createdAt', 'createdBy', 'feedReminderHours',
+                                 'lastFeedAt', 'nextFeedAt', 'nextFeedNotifiedFor', 'activeTimer',
+                                 'lastBottleMl', 'lastMilk', 'tz'])
+          && d.name is string && d.name.size() >= 1 && d.name.size() <= 40
+          && (!('birthDate' in d) || d.birthDate == null
+              || (d.birthDate is string && d.birthDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')))
+          && d.feedReminderHours in [0, 3, 4]
+          && (!('lastFeedAt' in d) || d.lastFeedAt == null || d.lastFeedAt is int)
+          && (!('nextFeedAt' in d) || d.nextFeedAt == null || d.nextFeedAt is int)
+          && (!('nextFeedNotifiedFor' in d) || d.nextFeedNotifiedFor == null || d.nextFeedNotifiedFor is int)
+          && (!('activeTimer' in d) || validTimer(d.activeTimer))
+          && (!('lastBottleMl' in d) || (d.lastBottleMl is int && d.lastBottleMl >= 1 && d.lastBottleMl <= 500))
+          && (!('lastMilk' in d) || d.lastMilk == null || d.lastMilk in ['breast', 'formula'])
+          && (!('tz' in d) || (d.tz is string && d.tz.size() <= 64));
+      }
+      // Beslenme kaydı: biberon (ml) ya da emzirme (taraf + bitiş, en fazla 6 saat)
+      function validFeed(d) {
+        return d.keys().hasOnly(['type', 'method', 'at', 'endAt', 'ml', 'milk', 'side', 'note',
+                                 'by', 'createdAt', 'updatedAt', 'tz'])
+          && d.type == 'feed'
+          && d.at is int && d.at > 1577836800000 && d.at < request.time.toMillis() + 86400000
+          && d.by is string
+          && (!('note' in d) || d.note == null || (d.note is string && d.note.size() <= 200))
+          && (!('tz' in d) || (d.tz is string && d.tz.size() <= 64))
+          && (
+            (d.method == 'bottle' && d.ml is int && d.ml >= 1 && d.ml <= 500
+              && (!('milk' in d) || d.milk == null || d.milk in ['breast', 'formula'])
+              && (!('side' in d) || d.side == null)
+              && (!('endAt' in d) || d.endAt == null))
+            || (d.method == 'breast' && d.side in ['L', 'R', 'both']
+              && (!('ml' in d) || d.ml == null)
+              && (!('milk' in d) || d.milk == null)
+              && d.endAt is int && d.endAt >= d.at && d.endAt <= d.at + 21600000)
+          );
+      }
+      match /babies/{babyId} {
+        allow read:   if isMember();
+        allow create: if isMember() && validBaby(request.resource.data)
+          && request.resource.data.createdBy == request.auth.uid;
+        allow update: if isMember() && validBaby(request.resource.data)
+          && request.resource.data.createdBy == resource.data.createdBy;
+        allow delete: if isMember();
+
+        match /events/{eventId} {
+          allow read:   if isMember();
+          // Yazar (by): kendisi ya da BU alanın bir üyesi (eşinin sildiği kaydı "geri al" için)
+          allow create: if isMember() && validFeed(request.resource.data)
+            && exists(memberPath(spaceId, request.resource.data.by));
+          // Düzenlemede asıl yazar korunur (eşler birbirinin kaydını düzeltebilir)
+          allow update: if isMember() && validFeed(request.resource.data)
+            && request.resource.data.by == resource.data.by;
+          allow delete: if isMember();
+        }
+      }
+
       // Sık eklenenler (otomatik tamamlama)
       match /frequent/{key} {
         allow read, write: if isMember();
