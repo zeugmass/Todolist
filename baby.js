@@ -6,7 +6,7 @@
 // yalnız textContent/value kullanılır. Kurallar: firestore.rules (validBaby/validFeed).
 // ============================================================================
 import {
-  collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot,
+  collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, getDocs,
   query, where, orderBy, limit, serverTimestamp, writeBatch
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
@@ -74,10 +74,124 @@ function feedText(ev) {
 function diaperText(ev) {
   return "🧷 " + (ev.pee && ev.poo ? "Islak + kirli" : ev.poo ? "Kirli" : "Islak");
 }
+const fmtG = (g) => `${Number(g).toLocaleString("tr-TR")} g`;                                  // 3650 → "3.650 g"
+const fmtCm = (mm) => `${(mm / 10).toLocaleString("tr-TR", { maximumFractionDigits: 1 })} cm`;   // 525 → "52,5 cm"
+function growthText(ev) {
+  const p = [];
+  if (ev.weightG != null) p.push(fmtG(ev.weightG));
+  if (ev.lengthMm != null) p.push(fmtCm(ev.lengthMm));
+  if (ev.headMm != null) p.push(`baş ${fmtCm(ev.headMm)}`);
+  return p.join(" · ");
+}
 function evText(ev) {
   if (ev.type === "diaper") return diaperText(ev);
   if (ev.type === "sleep") return `😴 Uyku · ${durText((ev.endAt || ev.at) - ev.at)}`;
+  if (ev.type === "growth") return `📏 ${growthText(ev)}`;
   return feedText(ev);
+}
+// "52,5" / "52.5" → 525 (mm); boş → null; geçersiz → NaN
+function parseCmToMm(v) {
+  const s = String(v || "").trim().replace(",", ".");
+  if (!s) return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? Math.round(n * 10) : NaN;
+}
+
+/* ---------- grafikler (kütüphanesiz SVG; veri yalnız sayı/textContent) ---------- */
+const SVGNS = "http://www.w3.org/2000/svg";
+function svgEl(tag, attrs = {}, text) {
+  const e = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, String(v));
+  if (text != null) e.textContent = text;
+  return e;
+}
+// "Güzel" üst sınır: 1-2-5 × 10^n
+function niceMax(v) {
+  if (v <= 0) return 1;
+  const p = 10 ** Math.floor(Math.log10(v)), f = v / p;
+  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p;
+}
+// Üstü 4px yuvarlak, tabana oturan çubuk yolu
+function barPath(x, y, w, base, r) {
+  const h = base - y;
+  if (h <= 0) return "";
+  const rr = Math.min(r, w / 2, h);
+  return `M${x},${base}V${y + rr}Q${x},${y} ${x + rr},${y}H${x + w - rr}Q${x + w},${y} ${x + w},${y + rr}V${base}Z`;
+}
+
+/* Tek seri çubuk grafik: 7 gün. Değer her çubukta yazılmaz; dokununca okuma satırında görünür. */
+function barChart({ title, unitFmt, values, labels, fullLabels, todayIdx }) {
+  const box = el("div", "ch");
+  const sum = values.reduce((a, b) => a + b, 0);
+  const daysWithData = values.filter((v) => v > 0).length || 1;
+  const head = el("div", "ch-head");
+  head.append(el("span", "ch-title", title),
+    el("span", "ch-meta", `ort. ${unitFmt(sum / daysWithData)} · bugün ${unitFmt(values[todayIdx] || 0)}`));
+  box.append(head);
+  const W = 300, H = 118, base = 96, top = 14, n = values.length, slot = W / n, bw = Math.min(28, slot - 10);
+  const max = niceMax(Math.max(...values));
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, class: "ch-svg", role: "img",
+    "aria-label": `${title}: ` + values.map((v, i) => `${fullLabels[i]} ${unitFmt(v)}`).join(", ") });
+  svg.append(svgEl("line", { x1: 0, x2: W, y1: base + 0.5, y2: base + 0.5, class: "ch-grid" }));
+  svg.append(svgEl("line", { x1: 0, x2: W, y1: top + 0.5, y2: top + 0.5, class: "ch-grid faint" }));
+  svg.append(svgEl("text", { x: 2, y: top - 4, class: "ch-axis" }, unitFmt(max)));
+  const readout = el("div", "ch-readout", "Bir güne dokun, değeri görünsün.");
+  readout.setAttribute("aria-live", "polite");
+  const bars = [];
+  values.forEach((v, i) => {
+    const x = i * slot + (slot - bw) / 2;
+    const y = base - (v / max) * (base - top);
+    const bar = svgEl("path", { d: barPath(x, y, bw, base, 4), class: "ch-bar" });
+    bars.push(bar);
+    svg.append(bar);
+    svg.append(svgEl("text", { x: i * slot + slot / 2, y: H - 6, "text-anchor": "middle",
+      class: "ch-axis" + (i === todayIdx ? " strong" : "") }, labels[i]));
+    const hit = svgEl("rect", { x: i * slot, y: 0, width: slot, height: H, class: "ch-hit" });
+    hit.addEventListener("click", () => {
+      bars.forEach((b, j) => b.classList.toggle("dim", j !== i));
+      readout.textContent = `${fullLabels[i]}: ${unitFmt(v)}`;
+    });
+    svg.append(hit);
+  });
+  box.append(svg, readout);
+  return box;
+}
+
+/* Tek seri çizgi grafik (gelişim). Son noktada doğrudan etiket; dokununca okuma satırı. */
+function lineChart({ points, valFmt, dateFmt }) {
+  const box = el("div", "ch");
+  if (!points.length) { box.append(el("p", "muted ch-empty", "Henüz bu ölçüm yok.")); return box; }
+  const W = 300, H = 150, L = 8, R = 44, T = 16, B = 22;
+  const xs = points.map((p) => p.at), ys = points.map((p) => p.v);
+  let x0 = Math.min(...xs), x1 = Math.max(...xs);
+  if (x0 === x1) { x0 -= DAY; x1 += DAY; }
+  let y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const pad = Math.max((y1 - y0) * 0.15, y1 * 0.02, 1); y0 -= pad; y1 += pad;
+  const X = (t) => L + ((t - x0) / (x1 - x0)) * (W - L - R);
+  const Y = (v) => T + (1 - (v - y0) / (y1 - y0)) * (H - T - B);
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, class: "ch-svg", role: "img",
+    "aria-label": points.map((p) => `${dateFmt(p.at)} ${valFmt(p.v)}`).join(", ") });
+  svg.append(svgEl("line", { x1: L, x2: W - R, y1: H - B + 0.5, y2: H - B + 0.5, class: "ch-grid" }));
+  svg.append(svgEl("text", { x: L, y: H - 6, class: "ch-axis" }, dateFmt(points[0].at)));
+  if (points.length > 1) svg.append(svgEl("text", { x: W - R, y: H - 6, "text-anchor": "end", class: "ch-axis" }, dateFmt(points[points.length - 1].at)));
+  if (points.length > 1) svg.append(svgEl("polyline", { points: points.map((p) => `${X(p.at)},${Y(p.v)}`).join(" "), class: "ch-line" }));
+  const readout = el("div", "ch-readout", points.length > 1 ? "Bir noktaya dokun, değeri görünsün." : "");
+  readout.setAttribute("aria-live", "polite");
+  const dots = [];
+  points.forEach((p, i) => {
+    const dot = svgEl("circle", { cx: X(p.at), cy: Y(p.v), r: 4.5, class: "ch-dot" });
+    dots.push(dot); svg.append(dot);
+    const hit = svgEl("circle", { cx: X(p.at), cy: Y(p.v), r: 16, class: "ch-hit" });
+    hit.addEventListener("click", () => {
+      dots.forEach((d, j) => d.classList.toggle("sel", j === i));
+      readout.textContent = `${dateFmt(p.at)}: ${valFmt(p.v)}`;
+    });
+    svg.append(hit);
+  });
+  const last = points[points.length - 1];
+  svg.append(svgEl("text", { x: X(last.at) + 8, y: Y(last.v) + 4, class: "ch-label" }, valFmt(last.v)));
+  box.append(svg, readout);
+  return box;
 }
 
 /* ---------- güvenli DOM yardımcıları ---------- */
@@ -238,7 +352,7 @@ export function createBabyTracker(ctx) {
     frag.append(summaryCard());
     if (baby.activeTimer) frag.append(timerCard());
     if (baby.sleepTimer) frag.append(sleepCard());
-    frag.append(actionsRow(), dayNav(), timeline());
+    frag.append(actionsRow(), linksRow(), dayNav(), timeline());
     root.replaceChildren(frag);
   }
 
@@ -248,6 +362,7 @@ export function createBabyTracker(ctx) {
     for (const ev of dayEvents) {
       if (ev.type === "diaper") { t.diapers++; if (ev.pee) t.pee++; if (ev.poo) t.poo++; continue; }
       if (ev.type === "sleep") { t.sleepMs += Math.max(0, (ev.endAt || ev.at) - ev.at); continue; }
+      if (ev.type === "growth") continue; // ölçüm; beslenme sayılmaz
       t.count++;
       if (ev.method === "bottle") { t.bottles++; t.ml += ev.ml || 0; }
       else { t.breasts++; t.breastMs += Math.max(0, (ev.endAt || ev.at) - ev.at); }
@@ -583,10 +698,149 @@ export function createBabyTracker(ctx) {
     });
   }
 
+  /* ================= gelişim + haftalık özet ================= */
+  function linksRow() {
+    const r = el("div", "bb-links");
+    r.append(btn("btn-secondary", "📈 Gelişim", openGrowthView), btn("btn-secondary", "📊 Son 7 gün", openWeekly));
+    return r;
+  }
+  const shortDate = (ms) => new Date(ms).toLocaleDateString("tr-TR", { day: "numeric", month: "short" });
+  // Veri yüklenirken pencere kapatılıp başka pencere açıldıysa, geç gelen içerik onun ÜZERİNE yazılmasın
+  const modalStillIs = (title) => !$("modal-overlay").classList.contains("hidden") && $("modal-title").textContent === title;
+
+  async function openGrowthView() {
+    if (!bid) return;
+    const mb = $("modal-body");
+    openModal({ title: "📈 Gelişim", autofocus: false, showCancel: false, okText: "Kapat",
+      bodyHTML: `<p class="muted">Yükleniyor…</p>` });
+    let list = [];
+    try {
+      const snap = await getDocs(query(evCol(), where("type", "==", "growth"), orderBy("at", "desc")));
+      list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    } catch (e) { dbg("gelişim HATA: " + (e.code || e.message)); if (modalStillIs("📈 Gelişim")) mb.replaceChildren(el("p", "muted", "Ölçümler yüklenemedi.")); return; }
+    if (!modalStillIs("📈 Gelişim")) return;
+    const METRICS = [
+      ["weightG", "Kilo", (v) => fmtG(v)],
+      ["lengthMm", "Boy", (v) => fmtCm(v)],
+      ["headMm", "Baş", (v) => fmtCm(v)]
+    ];
+    let metric = "weightG";
+    const tabs = el("div", "bb-seg");
+    const chartBox = el("div");
+    const drawChart = () => {
+      const [, , f] = METRICS.find((m) => m[0] === metric);
+      const pts = list.filter((g) => g[metric] != null).map((g) => ({ at: g.at, v: g[metric] })).sort((a, b) => a.at - b.at);
+      chartBox.replaceChildren(lineChart({ points: pts, valFmt: f, dateFmt: shortDate }));
+    };
+    METRICS.forEach(([k, t]) => { const b = btn("", t); b.dataset.v = k; tabs.append(b); });
+    wireSeg(tabs, metric, (v) => { metric = v; drawChart(); });
+    const add = btn("btn-primary bb-add", "+ Ölçüm ekle", () => { closeModal(); openGrowth(); });
+    const ul = el("ul", "bb-list");
+    if (!list.length) ul.append(el("li", "bb-empty muted", "Henüz ölçüm yok. Doktor kontrolünde ya da evde tartınca ekleyebilirsin."));
+    for (const g of list) {
+      const li = el("li", "bb-ev");
+      li.append(el("span", "bb-time bb-date", shortDate(g.at)));
+      const desc = el("div", "bb-desc");
+      desc.append(el("div", null, growthText(g)));
+      if (g.note) desc.append(el("div", "bb-note", g.note));
+      li.append(desc);
+      li.addEventListener("click", () => { closeModal(); openGrowth(g); });
+      ul.append(li);
+    }
+    mb.replaceChildren(tabs, chartBox, add, ul);
+    drawChart();
+  }
+
+  function openGrowth(ev) {
+    if (!bid) return;
+    const editing = !!ev;
+    const ref = editing ? evRef(ev.id) : null;
+    const mb = $("modal-body");
+    const toDateInput = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+    openModal({
+      title: editing ? "📏 Ölçümü düzenle" : "📏 Ölçüm ekle",
+      autofocus: false,
+      bodyHTML: `
+        <div class="field-label">Tarih</div>
+        <input id="g-date" type="date" />
+        <div class="field-label">Kilo (gram)</div>
+        <input id="g-w" type="number" inputmode="numeric" min="500" max="30000" placeholder="ör. 3650" />
+        <div class="field-label">Boy (cm)</div>
+        <input id="g-l" type="text" inputmode="decimal" maxlength="6" placeholder="ör. 52,5" autocomplete="off" />
+        <div class="field-label">Baş çevresi (cm)</div>
+        <input id="g-h" type="text" inputmode="decimal" maxlength="6" placeholder="ör. 35,5" autocomplete="off" />
+        <input id="f-note" type="text" maxlength="200" placeholder="Not (isteğe bağlı, ör. doktor kontrolü)" autocomplete="off" />
+        <p class="hint">Bildiğin ölçümleri gir; boş bırakılanlar kaydedilmez.</p>
+        ${editing ? `<button type="button" id="f-del" class="link-btn danger bb-del">Bu ölçümü sil</button>` : ""}`,
+      okText: "Kaydet",
+      onOk: () => {
+        const ds = mb.querySelector("#g-date").value;
+        const [yy, mm, dd] = ds.split("-").map((x) => parseInt(x, 10));
+        if (!yy || !mm || !dd) { modalError("Tarihi seç."); return false; }
+        let at = new Date(yy, mm - 1, dd, 12, 0, 0, 0).getTime();
+        if (startOfDay(at) > startOfDay(Date.now())) { modalError("İleri bir tarih seçilemez."); return false; }
+        if (at > Date.now()) at = Date.now(); // bugün ve öğleden önce
+        const wRaw = mb.querySelector("#g-w").value.trim();
+        const weightG = wRaw ? parseInt(wRaw, 10) : null;
+        const lengthMm = parseCmToMm(mb.querySelector("#g-l").value);
+        const headMm = parseCmToMm(mb.querySelector("#g-h").value);
+        if (weightG == null && lengthMm == null && headMm == null) { modalError("En az bir ölçüm gir."); return false; }
+        if (weightG != null && !(Number.isInteger(weightG) && weightG >= 500 && weightG <= 30000)) { modalError("Kilo 500–30000 gram arasında olmalı (ör. 3650)."); return false; }
+        if (lengthMm != null && !(lengthMm >= 250 && lengthMm <= 1300)) { modalError("Boy 25–130 cm arasında olmalı."); return false; }
+        if (headMm != null && !(headMm >= 200 && headMm <= 600)) { modalError("Baş çevresi 20–60 cm arasında olmalı."); return false; }
+        const note = mb.querySelector("#f-note").value.trim().slice(0, 200) || null;
+        const data = { type: "growth", at, weightG, lengthMm, headMm, note, tz: TZ, updatedAt: serverTimestamp() };
+        if (editing) { updateDoc(ref, data).catch(fail("Ölçüm")); toast("Güncellendi"); }
+        else { setDoc(doc(evCol()), { ...data, by: uid(), createdAt: serverTimestamp() }).catch(fail("Ölçüm")); toast(`📏 ${growthText(data)} kaydedildi`); }
+      }
+    });
+    mb.querySelector("#g-date").value = toDateInput(editing ? ev.at : Date.now());
+    mb.querySelector("#g-w").value = editing && ev.weightG != null ? ev.weightG : "";
+    mb.querySelector("#g-l").value = editing && ev.lengthMm != null ? String(ev.lengthMm / 10).replace(".", ",") : "";
+    mb.querySelector("#g-h").value = editing && ev.headMm != null ? String(ev.headMm / 10).replace(".", ",") : "";
+    mb.querySelector("#f-note").value = editing ? (ev.note || "") : "";
+    if (editing) mb.querySelector("#f-del").addEventListener("click", () => { closeModal(); deleteEvent(ev, ref); });
+  }
+
+  // Son 7 gün (bugün dahil): süt (ml), bez (adet), uyku (saat) — üç ayrı grafik (tek eksen kuralı)
+  async function openWeekly() {
+    if (!bid) return;
+    const mb = $("modal-body");
+    openModal({ title: "📊 Son 7 gün", autofocus: false, showCancel: false, okText: "Kapat",
+      bodyHTML: `<p class="muted">Yükleniyor…</p>` });
+    const today = startOfDay(Date.now());
+    const days = Array.from({ length: 7 }, (_, i) => addDays(today, i - 6));
+    let evs = [];
+    try {
+      const snap = await getDocs(query(evCol(), where("at", ">=", days[0]), orderBy("at")));
+      evs = snap.docs.map((d) => d.data());
+    } catch (e) { dbg("haftalık HATA: " + (e.code || e.message)); if (modalStillIs("📊 Son 7 gün")) mb.replaceChildren(el("p", "muted", "Veriler yüklenemedi.")); return; }
+    if (!modalStillIs("📊 Son 7 gün")) return;
+    const ml = Array(7).fill(0), diapers = Array(7).fill(0), sleepH = Array(7).fill(0);
+    for (const ev of evs) {
+      const i = days.findIndex((d, k) => ev.at >= d && (k === 6 || ev.at < days[k + 1]));
+      if (i < 0) continue;
+      if (ev.type === "feed" && ev.method === "bottle") ml[i] += ev.ml || 0;
+      else if (ev.type === "diaper") diapers[i]++;
+      else if (ev.type === "sleep") sleepH[i] += Math.max(0, (ev.endAt || ev.at) - ev.at) / HOUR;
+    }
+    const labels = days.map((d) => new Date(d).toLocaleDateString("tr-TR", { weekday: "short" }));
+    const fullLabels = days.map((d) => new Date(d).toLocaleDateString("tr-TR", { weekday: "long", day: "numeric", month: "long" }));
+    const common = { labels, fullLabels, todayIdx: 6 };
+    const oneDec = (v) => (Math.round(v * 10) / 10).toLocaleString("tr-TR", { maximumFractionDigits: 1 });
+    mb.replaceChildren(
+      barChart({ title: "🍼 Biberon (ml)", unitFmt: (v) => `${Math.round(v)} ml`, values: ml, ...common }),
+      barChart({ title: "🧷 Bez", unitFmt: (v) => `${oneDec(v)} bez`, values: diapers, ...common }),
+      barChart({ title: "😴 Uyku", unitFmt: (v) => `${oneDec(v)} sa`, values: sleepH, ...common }),
+      el("p", "hint", "Emzirme süreleri ml grafiğine katılmaz. Gece yarısını geçen uyku başladığı güne yazılır.")
+    );
+  }
+
   // Listedeki kayda dokununca türüne uygun düzenleyiciyi aç
   function openEditor(ev) {
     if (ev.type === "diaper") return openDiaper(ev);
     if (ev.type === "sleep") return openSleepManual(ev);
+    if (ev.type === "growth") return openGrowth(ev);
     return ev.method === "bottle" ? openBottle(ev) : openBreastManual(ev);
   }
 

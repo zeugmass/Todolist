@@ -146,8 +146,17 @@ service cloud.firestore {
           && d.type == 'sleep' && validCommon(d)
           && d.endAt is int && d.endAt >= d.at && d.endAt <= d.at + 57600000;
       }
+      // Gelişim ölçümü: kilo (gram), boy ve baş çevresi (mm) — en az biri, makul aralıkta
+      function validGrowth(d) {
+        return d.keys().hasOnly(['type', 'at', 'weightG', 'lengthMm', 'headMm', 'note', 'by', 'createdAt', 'updatedAt', 'tz'])
+          && d.type == 'growth' && validCommon(d)
+          && (!('weightG' in d) || d.weightG == null || (d.weightG is int && d.weightG >= 500 && d.weightG <= 30000))
+          && (!('lengthMm' in d) || d.lengthMm == null || (d.lengthMm is int && d.lengthMm >= 250 && d.lengthMm <= 1300))
+          && (!('headMm' in d) || d.headMm == null || (d.headMm is int && d.headMm >= 200 && d.headMm <= 600))
+          && (d.get('weightG', null) != null || d.get('lengthMm', null) != null || d.get('headMm', null) != null);
+      }
       function validEvent(d) {
-        return (d.type == 'feed' && validFeed(d)) || validDiaper(d) || validSleep(d);
+        return (d.type == 'feed' && validFeed(d)) || validDiaper(d) || validSleep(d) || validGrowth(d);
       }
       match /babies/{babyId} {
         allow read:   if isMember();

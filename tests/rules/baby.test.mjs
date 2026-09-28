@@ -179,6 +179,26 @@ test("uyku sayacı: geçerli ✓ / fazladan alan ✗ / metin zaman ✗ / kapatma
   await assertFails(updateDoc(doc(db, ...babyPath()), { sleepTimer: { startedAt: "şimdi", startedBy: A } }));
   await assertSucceeds(updateDoc(doc(db, ...babyPath()), { sleepTimer: null }));
 });
+// ── FAZ 3: GELİŞİM ───────────────────────────────────────────────────────────
+const growth = (over = {}) => ({ type: "growth", at: NOW - H, weightG: 3650, lengthMm: 520, headMm: 355, by: A, tz: "Europe/Paris", ...over });
+test("gelişim: tam ölçüm ✓ / yalnız kilo ✓ / yalnız boy ✓", async () => {
+  const db = as(A);
+  await assertSucceeds(setDoc(doc(db, ...evPath("g1")), growth()));
+  await assertSucceeds(setDoc(doc(db, ...evPath("g2")), growth({ lengthMm: null, headMm: null })));
+  const { weightG, headMm, ...onlyLen } = growth();
+  await assertSucceeds(setDoc(doc(db, ...evPath("g3")), onlyLen));
+});
+test("gelişim: hiç ölçüm yok / aralık dışı / ondalık gram / metin ✗", async () => {
+  const db = as(A);
+  await assertFails(setDoc(doc(db, ...evPath("g4")), growth({ weightG: null, lengthMm: null, headMm: null })));
+  await assertFails(setDoc(doc(db, ...evPath("g5")), growth({ weightG: 45000 })));
+  await assertFails(setDoc(doc(db, ...evPath("g6")), growth({ weightG: 100 })));
+  await assertFails(setDoc(doc(db, ...evPath("g7")), growth({ lengthMm: 2000 })));
+  await assertFails(setDoc(doc(db, ...evPath("g8")), growth({ headMm: 900 })));
+  await assertFails(setDoc(doc(db, ...evPath("g9")), growth({ weightG: 3650.5 })));
+  await assertFails(setDoc(doc(db, ...evPath("g10")), growth({ weightG: "3650" })));
+  await assertFails(setDoc(doc(db, ...evPath("g11")), growth({ ml: 100 })));
+});
 test("tür karıştırma: bez alanlarıyla uyku / uyku alanlarıyla bez ✗", async () => {
   const db = as(A);
   await assertFails(setDoc(doc(db, ...evPath("m1")), { ...sleep(), type: "diaper" }));

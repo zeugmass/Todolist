@@ -58,4 +58,19 @@ const at = Date.now() - 3600000;
 await put("spaces/devShared/babies/devBaby", { name: "Test Bebek", birthDate: "2026-09-10", feedReminderHours: 3, createdBy: A.uid, createdAt: now, tz: "Europe/Paris", lastFeedAt: at, nextFeedAt: at + 3 * 3600000 });
 await put("spaces/devShared/babies/devBaby/events/f1", { type: "feed", method: "bottle", at, ml: 120, milk: "breast", note: null, by: A.uid, tz: "Europe/Paris", createdAt: now, updatedAt: now });
 
-console.log("Emülatör test verisi yüklendi: 2 hesap, ortak + 2 kişisel alan, 1 liste, 1 test bebeği.");
+// Grafik testleri için: 3 gelişim ölçümü + son 6 günün biberon/bez/uyku kayıtları (uydurma)
+const base = { by: A.uid, tz: "Europe/Paris", note: null, createdAt: now, updatedAt: now };
+const noon = (y, m, d) => new Date(y, m - 1, d, 12).getTime();
+await put("spaces/devShared/babies/devBaby/events/g1", { ...base, type: "growth", at: noon(2026, 9, 10), weightG: 3400, lengthMm: 500, headMm: 345 });
+await put("spaces/devShared/babies/devBaby/events/g2", { ...base, type: "growth", at: noon(2026, 9, 17), weightG: 3480, lengthMm: null, headMm: null });
+await put("spaces/devShared/babies/devBaby/events/g3", { ...base, type: "growth", at: noon(2026, 9, 24), weightG: 3750, lengthMm: 520, headMm: 355 });
+const dayMs = 86400000, today0 = new Date(); today0.setHours(0, 0, 0, 0);
+let n = 0;
+for (let d = 6; d >= 1; d--) {
+  const s = today0.getTime() - d * dayMs;
+  for (let k = 0; k < 5 + (d % 3); k++) await put(`spaces/devShared/babies/devBaby/events/b${n++}`, { ...base, type: "feed", method: "bottle", at: s + (1 + k * 4) * 3600000, ml: 80 + ((d * 7 + k * 13) % 5) * 10, milk: "formula" });
+  for (let k = 0; k < 5 + (d % 2) * 2; k++) await put(`spaces/devShared/babies/devBaby/events/d${n++}`, { ...base, type: "diaper", at: s + (2 + k * 3) * 3600000, pee: true, poo: k % 3 === 0 });
+  for (let k = 0; k < 3; k++) await put(`spaces/devShared/babies/devBaby/events/s${n++}`, { ...base, type: "sleep", at: s + (3 + k * 6) * 3600000, endAt: s + (3 + k * 6) * 3600000 + (2 + (d + k) % 3) * 3600000 });
+}
+
+console.log("Emülatör test verisi yüklendi: 2 hesap, ortak + 2 kişisel alan, 1 liste, 1 test bebeği (+ ölçümler, 6 günlük geçmiş).");
