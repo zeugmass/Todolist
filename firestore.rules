@@ -155,8 +155,31 @@ service cloud.firestore {
           && (!('headMm' in d) || d.headMm == null || (d.headMm is int && d.headMm >= 200 && d.headMm <= 600))
           && (d.get('weightG', null) != null || d.get('lengthMm', null) != null || d.get('headMm', null) != null);
       }
+      // Vitamin/ilaç "verildi" kaydı: hangi takviye (m1..m5) + o anki adı (geçmiş, ad değişse de okunur)
+      function validMedEv(d) {
+        return d.keys().hasOnly(['type', 'at', 'medId', 'name', 'note', 'by', 'createdAt', 'updatedAt', 'tz'])
+          && d.type == 'med' && validCommon(d)
+          && d.medId in ['m1', 'm2', 'm3', 'm4', 'm5']
+          && d.name is string && d.name.size() >= 1 && d.name.size() <= 40;
+      }
       function validEvent(d) {
-        return (d.type == 'feed' && validFeed(d)) || validDiaper(d) || validSleep(d) || validGrowth(d);
+        return (d.type == 'feed' && validFeed(d)) || validDiaper(d) || validSleep(d) || validGrowth(d) || validMedEv(d);
+      }
+      // Günlük takviye (D vitamini vb.): ad, saat "SS:DD", son verilme bilgisi, sunucunun hatırlatma zamanı.
+      // Kimlik yalnız m1..m5 olabilir → bebek başına EN FAZLA 5 takviye.
+      function validMed(d) {
+        return d.keys().hasOnly(['name', 'time', 'tz', 'createdAt', 'createdBy', 'updatedAt',
+                                 'lastGivenAt', 'lastGivenBy', 'lastEventId', 'notifyAt', 'remindN'])
+          && d.name is string && d.name.size() >= 1 && d.name.size() <= 40
+          && d.time is string && d.time.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$')
+          && (!('tz' in d) || (d.tz is string && d.tz.size() <= 64))
+          && (!('lastGivenAt' in d) || d.lastGivenAt == null
+              || (d.lastGivenAt is int && d.lastGivenAt < request.time.toMillis() + 86400000))
+          && (!('lastGivenBy' in d) || d.lastGivenBy == null
+              || (d.lastGivenBy is string && exists(memberPath(spaceId, d.lastGivenBy))))
+          && (!('lastEventId' in d) || d.lastEventId == null || (d.lastEventId is string && d.lastEventId.size() <= 40))
+          && (!('notifyAt' in d) || d.notifyAt == null || d.notifyAt is int)
+          && (!('remindN' in d) || d.remindN in [0, 1]);
       }
       match /babies/{babyId} {
         allow read:   if isMember();
@@ -174,6 +197,16 @@ service cloud.firestore {
           // Düzenlemede asıl yazar korunur (eşler birbirinin kaydını düzeltebilir)
           allow update: if isMember() && validEvent(request.resource.data)
             && request.resource.data.by == resource.data.by;
+          allow delete: if isMember();
+        }
+
+        match /meds/{medId} {
+          allow read:   if isMember();
+          allow create: if isMember() && medId in ['m1', 'm2', 'm3', 'm4', 'm5']
+            && validMed(request.resource.data)
+            && request.resource.data.createdBy == request.auth.uid;
+          allow update: if isMember() && validMed(request.resource.data)
+            && request.resource.data.createdBy == resource.data.createdBy;
           allow delete: if isMember();
         }
       }

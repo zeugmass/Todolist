@@ -291,9 +291,9 @@ input:focus { border-color: var(--accent); }
   background: var(--text); color: var(--bg);
   display: flex; align-items: center; gap: 16px;
   padding: 12px 16px; border-radius: 12px; box-shadow: var(--shadow);
-  max-width: 90%;
+  width: max-content; max-width: 90vw; /* left:50% ile ekranın yarısına sıkışmasın */
 }
-.snackbar-btn { color: var(--bg); font-weight: 700; text-decoration: underline; }
+.snackbar-btn { color: var(--bg); font-weight: 700; text-decoration: underline; white-space: nowrap; }
 
 /* App Check / reCAPTCHA: yüzen rozet arayüzü kapatmasın. Google'ın şartı gereği yerine
    menü altında bilgi metni (.recaptcha-note) gösteriliyor. */
@@ -336,6 +336,25 @@ input:focus { border-color: var(--accent); }
 .bb-bigbtns.pick .bb-bigbtn:not(.sel) { opacity: .35; }
 .bb-links { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .bb-links .btn-secondary { padding: 11px 6px; font-size: 15px; }
+.bb-links .wide { grid-column: 1 / -1; }
+/* Günlük takviye kartı: satıra dokun = "Verdim" (verildiyse ✓ saat · kim) */
+.bb-meds { padding: 12px 14px; }
+.bb-meds-edit { padding: 2px 4px; font-size: 14px; color: var(--muted); }
+.bb-med {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%;
+  margin-top: 8px; padding: 10px 12px; border-radius: 12px; background: var(--surface); text-align: left;
+}
+.bb-med-txt { display: flex; flex-direction: column; min-width: 0; }
+.bb-med-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bb-med-sub { font-size: 13px; color: var(--muted); }
+.bb-med-sub.late { color: var(--danger); }
+.bb-med-state {
+  flex: 0 0 auto; padding: 8px 14px; border-radius: 999px; font-weight: 700; font-size: 15px;
+  background: var(--accent); color: var(--accent-contrast);
+}
+.bb-med.done .bb-med-state { background: transparent; color: var(--text); padding: 8px 0; font-variant-numeric: tabular-nums; }
+.bb-med.done .bb-med-name { color: var(--muted); }
+.bb-med:active { opacity: .85; }
 .bb-date { width: 58px; font-size: 14px; }
 .bb-add { margin: 12px 0 4px; }
 /* Grafikler (tek seri; renkler tema değişkenlerinden → açık/koyu tema otomatik) */

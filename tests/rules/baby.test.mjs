@@ -199,6 +199,45 @@ test("gelişim: hiç ölçüm yok / aralık dışı / ondalık gram / metin ✗"
   await assertFails(setDoc(doc(db, ...evPath("g10")), growth({ weightG: "3650" })));
   await assertFails(setDoc(doc(db, ...evPath("g11")), growth({ ml: 100 })));
 });
+// ── FAZ 3b: VİTAMİN / İLAÇ ───────────────────────────────────────────────────
+const medPath = (mid, sid = S, bid = "b1") => ["spaces", sid, "babies", bid, "meds", mid];
+const med = (over = {}) => ({ name: "D vitamini", time: "09:00", tz: "Europe/Paris", createdBy: A,
+  lastGivenAt: null, lastGivenBy: null, lastEventId: null, notifyAt: NOW + H, remindN: 0, ...over });
+const medEv = (over = {}) => ({ type: "med", at: NOW - MIN, medId: "m1", name: "D vitamini", by: A, tz: "Europe/Paris", note: null, ...over });
+test("takviye: m1..m5 ✓ / m6 ve rastgele kimlik ✗ (en fazla 5)", async () => {
+  const db = as(A);
+  await assertSucceeds(setDoc(doc(db, ...medPath("m1")), med()));
+  await assertSucceeds(setDoc(doc(db, ...medPath("m5")), med({ name: "Demir", time: "18:30" })));
+  await assertFails(setDoc(doc(db, ...medPath("m6")), med()));
+  await assertFails(setDoc(doc(db, ...medPath("abc")), med()));
+});
+test("takviye: boş/uzun ad, bozuk saat, fazladan alan, başkası adına, remindN 2 ✗", async () => {
+  const db = as(A);
+  await assertFails(setDoc(doc(db, ...medPath("m1")), med({ name: "" })));
+  await assertFails(setDoc(doc(db, ...medPath("m1")), med({ name: "x".repeat(41) })));
+  await assertFails(setDoc(doc(db, ...medPath("m1")), med({ time: "24:00" })));
+  await assertFails(setDoc(doc(db, ...medPath("m1")), med({ time: "9:00" })));
+  await assertFails(setDoc(doc(db, ...medPath("m1")), med({ doz: "400 IU" })));
+  await assertFails(setDoc(doc(db, ...medPath("m1")), med({ createdBy: B })));
+  await assertFails(setDoc(doc(db, ...medPath("m1")), med({ remindN: 2 })));
+});
+test("takviye: eş 'verildi' işaretler ✓; üye olmayan adına ✗; izinsiz/kişisel alan dışı ✗", async () => {
+  await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), ...medPath("m1")), med()));
+  await assertSucceeds(updateDoc(doc(as(B), ...medPath("m1")), { lastGivenAt: NOW, lastGivenBy: B, lastEventId: "ev1" }));
+  await assertSucceeds(updateDoc(doc(as(A), ...medPath("m1")), { lastGivenAt: null, lastGivenBy: null, lastEventId: null }));
+  await assertFails(updateDoc(doc(as(A), ...medPath("m1")), { lastGivenAt: NOW, lastGivenBy: X }));
+  await assertFails(updateDoc(doc(as(B), ...medPath("m1")), { createdBy: B }));
+  await assertFails(getDoc(doc(as(X), ...medPath("m1"))));
+  await assertFails(setDoc(doc(as(B), ...medPath("m1", P, "pb")), med({ createdBy: B })));
+});
+test("vitamin kaydı: geçerli ✓ / m9 / boş ad / fazladan alan / sahte yazar ✗", async () => {
+  const db = as(A);
+  await assertSucceeds(setDoc(doc(db, ...evPath("v1")), medEv()));
+  await assertFails(setDoc(doc(db, ...evPath("v2")), medEv({ medId: "m9" })));
+  await assertFails(setDoc(doc(db, ...evPath("v3")), medEv({ name: "" })));
+  await assertFails(setDoc(doc(db, ...evPath("v4")), medEv({ ml: 5 })));
+  await assertFails(setDoc(doc(db, ...evPath("v5")), medEv({ by: X })));
+});
 test("tür karıştırma: bez alanlarıyla uyku / uyku alanlarıyla bez ✗", async () => {
   const db = as(A);
   await assertFails(setDoc(doc(db, ...evPath("m1")), { ...sleep(), type: "diaper" }));

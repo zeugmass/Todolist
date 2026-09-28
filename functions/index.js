@@ -70,6 +70,25 @@ function nextOccurrence(t, startTodayMs, tz) {
   return msInTz(sp.y, sp.mo, sp.day, h, mi, tz);
 }
 
+// Takviye (vitamin/ilaç) hatırlatmasının bir adımı: belge + şimdi → { upd: yazılacak alanlar, send: bildirim? }
+// "Verildi mi" o günün (İLK hatırlatmanın günü, takviyenin tz'si) başından beri bakılır; böylece
+// 23:30'daki takviyenin 00:30'daki 2. hatırlatması da doğru güne göre karar verir.
+function medStep(m, now) {
+  const tz = m.tz || DEFAULT_TZ;
+  const [h, mi] = String(m.time || "09:00").split(":").map((x) => parseInt(x, 10));
+  const nextDaily = (after) => {
+    const p = partsInTz(after, tz);
+    const c = msInTz(p.y, p.mo, p.day, h, mi, tz);
+    return c > after ? c : msInTz(p.y, p.mo, p.day + 1, h, mi, tz);
+  };
+  const firstAt = m.notifyAt - (m.remindN ? 3600000 : 0);
+  const given = !!m.lastGivenAt && m.lastGivenAt >= startOfToday(firstAt, tz);
+  const stale = now - m.notifyAt > 30 * 60000; // sunucu kaçırmış/eski → göndermeden ileri al
+  if (given || stale) return { upd: { notifyAt: nextDaily(now), remindN: 0 }, send: false };
+  if (!m.remindN) return { upd: { notifyAt: m.notifyAt + 3600000, remindN: 1 }, send: true };
+  return { upd: { notifyAt: nextDaily(now), remindN: 0 }, send: true };
+}
+
 async function tokensForSpace(sid) {
   const tokens = [];
   try {
@@ -191,6 +210,36 @@ exports.sendReminders = onSchedule(
     }
     } catch (e) { console.error("beslenme hatırlatma adımı hatası", e.message || e); }
 
-    console.log(`Gönderilen: ${sent}, ilerletilen: ${rolled}, beslenme: ${feedSent}`);
+    // 4) VİTAMİN / İLAÇ HATIRLATMASI — her takviye belgesinde notifyAt (sıradaki hatırlatma anı) var.
+    //    Saatinde verilmemişse bildirim; 1 saat sonra hâlâ işaretlenmemişse BİR kez daha; sonra ertesi güne.
+    //    O gün (takviyenin tz'sine göre) zaten verildiyse göndermeden ertesi güne kurulur.
+    //    Önce notifyAt ilerletilir, sonra gönderilir → aynı hatırlatma iki kez gitmez.
+    let medSent = 0;
+    try {
+    const medSnap = await db.collectionGroup("meds").where("notifyAt", "<=", now).get();
+    for (const mSnap of medSnap.docs) {
+      const m = mSnap.data();
+      const { upd, send } = medStep(m, now);
+      try { await mSnap.ref.update(upd); } catch (e) { continue; }
+      if (!send) continue;
+      const sid = mSnap.ref.path.split("/")[1]; // spaces/{sid}/babies/{bid}/meds/{mid}
+      const tokens = await tokensForSpace(sid);
+      if (!tokens.length) continue;
+      try {
+        const resp = await getMessaging().sendEachForMulticast({
+          tokens,
+          webpush: { headers: { Urgency: "high", TTL: "3600" } },
+          data: {
+            title: "💊 Takviye zamanı",
+            body: `${m.name} — bugün henüz işaretlenmedi` + (m.remindN ? " (2. hatırlatma)" : ""),
+            url: "./", tag: "med-" + mSnap.id
+          }
+        });
+        medSent += resp.successCount;
+      } catch (e) { console.error("takviye bildirimi hatası", e); }
+    }
+    } catch (e) { console.error("takviye hatırlatma adımı hatası", e.message || e); }
+
+    console.log(`Gönderilen: ${sent}, ilerletilen: ${rolled}, beslenme: ${feedSent}, takviye: ${medSent}`);
   }
 );
