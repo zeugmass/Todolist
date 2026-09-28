@@ -577,8 +577,8 @@ function setConnStatus(count) {
 function renderLists() {
   const ul = $("lists-ul");
   ul.innerHTML = "";
-  // En üstte bebek takibi (ortak alan varsa); dokununca ortak alana geçip bebek ekranını açar
-  if (sharedSpaceId()) {
+  // En üstte bebek takibi — yalnız ORTAK alandayken (bebek verisi orada durur; kişisel alanda göstermek kafa karıştırıyordu)
+  if (spaceShared && sharedSpaceId()) {
     const li = document.createElement("li");
     li.className = "list-row baby-row" + (viewMode === "baby" ? " active" : "");
     const name = document.createElement("span");

@@ -259,8 +259,17 @@ input:focus { border-color: var(--accent); }
 .popmenu-item.danger { color: var(--danger); }
 
 /* Modal */
-#modal-overlay { display: flex; align-items: center; justify-content: center; padding: 24px; z-index: 40; }
+/* Arka plan: koyulaştır + bulanıklaştır → arkadaki yazılar pencereyle karışmasın */
+#modal-overlay {
+  display: flex; align-items: center; justify-content: center; padding: 24px; z-index: 40;
+  background: rgba(0,0,0,0.55); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+}
 .modal { width: 100%; max-width: 380px; background: var(--surface); border-radius: 18px; padding: 22px; box-shadow: var(--shadow); }
+/* Koyu temada pencere, arkadaki kartlardan bir ton açık olsun (iOS'taki gibi "öne çıkmış" yüzey) */
+@media (prefers-color-scheme: dark) {
+  #modal-overlay { background: rgba(0,0,0,0.75); }
+  .modal { --surface: #1c1c1e; --surface-2: #2c2c2e; --border: #3a3a3c; border: 1px solid rgba(255,255,255,0.08); }
+}
 .modal h3 { margin: 0 0 14px; font-size: 19px; }
 #modal-body input { margin-bottom: 8px; }
 .modal-actions { display: flex; gap: 10px; margin-top: 18px; }
