@@ -7,7 +7,7 @@
 // ============================================================================
 import {
   collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, getDocs,
-  query, where, orderBy, limit, serverTimestamp, writeBatch
+  query, where, orderBy, limit, serverTimestamp, writeBatch, FieldPath, deleteField
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const MIN = 60000, HOUR = 3600000, DAY = 86400000;
@@ -87,7 +87,7 @@ function evText(ev) {
   if (ev.type === "diaper") return diaperText(ev);
   if (ev.type === "sleep") return `😴 Uyku · ${durText((ev.endAt || ev.at) - ev.at)}`;
   if (ev.type === "growth") return `📏 ${growthText(ev)}`;
-  if (ev.type === "med") return `💊 ${ev.name} verildi`;
+  if (ev.type === "med") return `💊 ${ev.name}${ev.dose ? ` (${ev.dose})` : ""} verildi`;
   return feedText(ev);
 }
 const MED_IDS = ["m1", "m2", "m3", "m4", "m5"]; // kurallarla aynı: en fazla 5 takviye
@@ -364,7 +364,8 @@ export function createBabyTracker(ctx) {
     if (baby.activeTimer) frag.append(timerCard());
     if (baby.sleepTimer) frag.append(sleepCard());
     frag.append(actionsRow());
-    if (meds.length) frag.append(medsCard());
+    const act = activeMeds(); // kürü bitenler kartta görünmez (listede "bitti")
+    if (act.length) frag.append(medsCard(act));
     frag.append(linksRow(), dayNav(), timeline());
     root.replaceChildren(frag);
   }
@@ -716,6 +717,7 @@ export function createBabyTracker(ctx) {
     const r = el("div", "bb-links");
     r.append(btn("btn-secondary", "📈 Gelişim", openGrowthView), btn("btn-secondary", "📊 Son 7 gün", openWeekly));
     if (!meds.length) r.append(btn("btn-secondary wide", "💊 Vitamin / ilaç hatırlatması ekle", () => openMedEdit()));
+    else if (!activeMeds().length) r.append(btn("btn-secondary wide", "💊 Vitamin / ilaç", openMeds)); // hepsinin süresi bitti
     return r;
   }
   const shortDate = (ms) => new Date(ms).toLocaleDateString("tr-TR", { day: "numeric", month: "short" });
@@ -851,68 +853,141 @@ export function createBabyTracker(ctx) {
   }
 
   /* ================= vitamin / ilaç (günlük takviye) ================= */
-  // Takviye belgesi: meds/m1..m5 { name, time "SS:DD", lastGivenAt/By, lastEventId, notifyAt, remindN }.
-  // Bildirimi SUNUCU gönderir (functions: notifyAt'e bakar; verilmişse atlar, 1 saat sonra bir kez daha).
-  // "Verdim" = bir events kaydı (geçmişte görünsün) + takviye belgesinde lastGivenAt (eşin telefonunda ✓).
-  const givenToday = (m) => !!m.lastGivenAt && m.lastGivenAt >= startOfDay(Date.now());
-  // Bu saatin bir sonraki gelişi (bugün geçtiyse yarın) — cihazın yerel saatiyle
-  function nextLocal(time) {
-    const today = startOfDay(Date.now());
-    const t = atFromDayAndTime(today, time);
-    return t > Date.now() ? t : atFromDayAndTime(addDays(today, 1), time);
+  // Takviye belgesi: meds/m1..m5 { name, times ["08:00",…] (1–4; time = ilk saat), doses {"08:00": {at,by,eventId}},
+  //   startDate/endDate (kür; yoksa sürekli), notifyAt/notifyDose/remindN (sunucunun sıradaki hatırlatması) }.
+  // Sürüm 12 belgelerinde times/doses yok (time + lastGivenAt/By/lastEventId) → okurken çevrilir, ilk yazışta yeni biçime geçer.
+  // Bildirimi SUNUCU gönderir (functions medStep: her doz için; verilmişse atlar, 1 saat sonra bir kez daha).
+  // "Verdim" = bir events kaydı (geçmişte görünsün) + doses[saat] (eşin telefonunda ✓).
+  const ymd = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+  const ymdMs = (s) => { const [y, mo, d] = s.split("-").map(Number); return new Date(y, mo - 1, d).getTime(); };
+  const dayNum = (s) => Math.round(ymdMs(s) / DAY);
+  const medTimes = (m) => (Array.isArray(m.times) && m.times.length ? m.times : [m.time || "09:00"]).slice().sort();
+  const isMulti = (m) => medTimes(m).length > 1;
+  // Tüm dozların kayıtlı "verildi" bilgisi (eski belge: lastGivenAt → ilk saatin dozu)
+  function dosesOf(m) {
+    if (m.doses) return { ...m.doses };
+    if (!m.lastGivenAt) return {};
+    return { [medTimes(m)[0]]: { at: m.lastGivenAt, by: m.lastGivenBy || "", eventId: m.lastEventId || "" } };
   }
+  // Bu doz BUGÜN verildiyse { at, by, eventId }, değilse null
+  function doseInfo(m, t) {
+    const d = dosesOf(m)[t];
+    return d && d.at >= startOfDay(Date.now()) ? d : null;
+  }
+  const courseDone = (m) => !!m.endDate && ymd(Date.now()) > m.endDate;
+  const activeMeds = () => meds.filter((m) => !courseDone(m));
+  function courseText(m) {
+    if (!m.startDate || !m.endDate) return "";
+    const total = dayNum(m.endDate) - dayNum(m.startDate) + 1;
+    if (courseDone(m)) return `bitti (${total} gün)`;
+    const day = dayNum(ymd(Date.now())) - dayNum(m.startDate) + 1;
+    return day >= total ? `son gün (${total}/${total})` : `${day}. gün / ${total}`;
+  }
+  // "after"dan sonraki ilk doz (kür içinde) → { at, dose } ya da kür bittiyse null. Sunucudaki nextDoseAt ile aynı mantık.
+  function nextDose(m, after = Date.now()) {
+    const times = medTimes(m), today = startOfDay(after);
+    for (let d = 0; d <= 2; d++) {
+      for (const t of times) {
+        const day = addDays(today, d), at = atFromDayAndTime(day, t);
+        if (at <= after) continue;
+        const ds = ymd(day);
+        if (m.startDate && ds < m.startDate) continue;
+        if (m.endDate && ds > m.endDate) return null;
+        return { at, dose: t };
+      }
+    }
+    return null;
+  }
+  const notifyFields = (m) => { const nd = nextDose(m); return { notifyAt: nd ? nd.at : null, notifyDose: nd ? nd.dose : null, remindN: 0 }; };
+  // Eski (sürüm 12) belgeyi yeni biçime getiren alanlar; yeni belgede boş
+  const upgradeFields = (m) => (m.times && m.doses ? {} : { times: medTimes(m), time: medTimes(m)[0], doses: dosesOf(m),
+    lastGivenAt: null, lastGivenBy: null, lastEventId: null });
+  const doseLabel = (m, t) => (isMulti(m) ? `${m.name} (${t})` : m.name);
 
-  function medsCard() {
+  function medsCard(list) {
     const c = el("section", "bb-card bb-meds");
     const head = el("div", "bb-row");
     head.append(el("span", "bb-label", "💊 Bugün"), btn("link-btn bb-meds-edit", "Düzenle", openMeds));
     c.append(head);
-    for (const m of meds) {
-      const done = givenToday(m);
-      const row = btn("bb-med" + (done ? " done" : ""), null, () => (done ? openMedGiven(m) : markGiven(m)));
+    const now = Date.now(), today = startOfDay(now);
+    const who = (info) => (members.size > 1 && info.by && members.has(info.by) ? ` · ${initial(info.by)}` : "");
+    for (const m of list) {
+      const times = medTimes(m), course = courseText(m);
+      if (times.length === 1) {
+        // Günde tek doz: tüm satır tek düğme ("Verdim" / "✓ saat · kim")
+        const t = times[0], info = doseInfo(m, t);
+        const row = btn("bb-med" + (info ? " done" : ""), null, () => (info ? openMedGiven(m, t) : markGiven(m, t)));
+        const txt = el("span", "bb-med-txt");
+        txt.append(el("span", "bb-med-name", m.name));
+        const late = !info && atFromDayAndTime(today, t) < now;
+        txt.append(el("span", "bb-med-sub" + (late ? " late" : ""), (late ? `${t} · saati geçti` : t) + (course ? ` · ${course}` : "")));
+        row.append(txt, el("span", "bb-med-state", info ? `✓ ${hhmm(info.at)}${who(info)}` : "Verdim"));
+        row.setAttribute("aria-label", info ? `${m.name}: bugün ${hhmm(info.at)} verildi` : `${m.name}: verildi olarak işaretle`);
+        c.append(row);
+        continue;
+      }
+      // Günde birden fazla doz: ad + her doz için küçük düğme
+      const box = el("div", "bb-med multi");
       const txt = el("span", "bb-med-txt");
-      txt.append(el("span", "bb-med-name", m.name));
-      const late = !done && atFromDayAndTime(startOfDay(Date.now()), m.time) < Date.now();
-      txt.append(el("span", "bb-med-sub" + (late ? " late" : ""), late ? `${m.time} · saati geçti` : m.time));
-      const who = members.size > 1 && m.lastGivenBy ? ` · ${initial(m.lastGivenBy)}` : "";
-      row.append(txt, el("span", "bb-med-state", done ? `✓ ${hhmm(m.lastGivenAt)}${who}` : "Verdim"));
-      row.setAttribute("aria-label", done ? `${m.name}: bugün ${hhmm(m.lastGivenAt)} verildi` : `${m.name}: verildi olarak işaretle`);
-      c.append(row);
+      const given = times.filter((t) => doseInfo(m, t)).length;
+      txt.append(el("span", "bb-med-name", m.name),
+        el("span", "bb-med-sub", `${given}/${times.length} doz` + (course ? ` · ${course}` : "")));
+      const grid = el("div", "bb-doses");
+      for (const t of times) {
+        const info = doseInfo(m, t), late = !info && atFromDayAndTime(today, t) < now;
+        const b = btn("bb-dose" + (info ? " done" : late ? " late" : ""), null, () => (info ? openMedGiven(m, t) : markGiven(m, t)));
+        b.append(el("span", "bb-dose-t", t), el("span", "bb-dose-s", info ? `✓ ${hhmm(info.at)}${who(info)}` : late ? "geçti · Verdim" : "Verdim"));
+        b.setAttribute("aria-label", info ? `${m.name} ${t} dozu: ${hhmm(info.at)} verildi` : `${m.name} ${t} dozu: verildi olarak işaretle`);
+        grid.append(b);
+      }
+      box.append(txt, grid);
+      c.append(box);
     }
     return c;
   }
 
-  // Tek dokunuş: şimdi verildi. Yollar dokunma anında sabitlenir ("Geri al" doğru yere yazsın).
-  function markGiven(m) {
+  // Tek dokunuş: bu doz şimdi verildi. Yalnız O dozun alanı yazılır (doses.<saat>) → eşin aynı anda başka
+  // dozu işaretlemesi silinmez. Yollar dokunma anında sabitlenir ("Geri al" doğru yere yazsın).
+  function markGiven(m, t) {
     if (!bid) return;
     const eref = doc(evCol()), mref = medRef(m.id), now = Date.now();
-    const prev = { lastGivenAt: m.lastGivenAt ?? null, lastGivenBy: m.lastGivenBy ?? null, lastEventId: m.lastEventId ?? null };
+    const prev = dosesOf(m)[t] || null, up = upgradeFields(m);
     const b = writeBatch(db);
-    b.set(eref, { type: "med", at: now, medId: m.id, name: m.name, note: null, by: uid(), tz: TZ,
+    b.set(eref, { type: "med", at: now, medId: m.id, name: m.name, dose: isMulti(m) ? t : null, note: null, by: uid(), tz: TZ,
       createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
-    b.update(mref, { lastGivenAt: now, lastGivenBy: uid(), lastEventId: eref.id });
+    const val = { at: now, by: uid(), eventId: eref.id };
+    if (up.doses) b.update(mref, { ...up, doses: { ...up.doses, [t]: val } }); // eski belge: tek yazışta yeni biçime
+    else b.update(mref, new FieldPath("doses", t), val);
     b.commit().catch(fail("Takviye"));
-    showSnackbar(`💊 ${m.name} verildi`, () => {
-      const u = writeBatch(db); u.delete(eref); u.update(mref, prev); u.commit().catch(fail("Geri alma"));
+    showSnackbar(`💊 ${doseLabel(m, t)} verildi`, () => {
+      const u = writeBatch(db);
+      u.delete(eref);
+      u.update(mref, new FieldPath("doses", t), prev || deleteField());
+      u.commit().catch(fail("Geri alma"));
     });
   }
 
-  // Kaydı sil; takviyenin "bugün verildi" işareti BU kayıttan geliyorsa onu da kaldır. "Geri al" ikisini de geri yazar.
+  // Kaydı sil; dozun "verildi" işareti BU kayıttan geliyorsa onu da kaldır. "Geri al" ikisini de geri yazar.
   function removeMedEvent(ev) {
     const eref = evRef(ev.id);
     const m = meds.find((x) => x.id === ev.medId);
-    const touch = !!m && m.lastEventId === ev.id;
+    const t = m ? (ev.dose || medTimes(m)[0]) : null;
+    const prev = m ? dosesOf(m)[t] || null : null;
+    const touch = !!prev && prev.eventId === ev.id;
     const mref = touch ? medRef(m.id) : null;
-    const prev = touch ? { lastGivenAt: m.lastGivenAt, lastGivenBy: m.lastGivenBy, lastEventId: m.lastEventId } : null;
     const b = writeBatch(db);
     b.delete(eref);
-    if (touch) b.update(mref, { lastGivenAt: null, lastGivenBy: null, lastEventId: null });
+    if (touch) {
+      const up = upgradeFields(m);
+      if (up.doses) { const { [t]: _gone, ...rest } = up.doses; b.update(mref, { ...up, doses: rest }); }
+      else b.update(mref, new FieldPath("doses", t), deleteField());
+    }
     b.commit().catch(fail("Silme"));
     const { id, ...data } = ev;
     showSnackbar("İşaret kaldırıldı", () => {
       const u = writeBatch(db);
       u.set(eref, { ...data, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
-      if (touch) u.update(mref, prev);
+      if (touch) u.update(mref, new FieldPath("doses", t), prev);
       u.commit().catch(fail("Geri alma"));
     });
   }
@@ -924,73 +999,134 @@ export function createBabyTracker(ctx) {
     mb.querySelector("#md-info").textContent = info;
     mb.querySelector("#md-del").addEventListener("click", () => { closeModal(); removeMedEvent(ev); });
   }
-  // Karttaki ✓ satırına dokununca: bilgi + işareti kaldırma
-  function openMedGiven(m) {
-    const who = members.size > 1 && m.lastGivenBy ? ` (${initial(m.lastGivenBy)})` : "";
-    medGivenModal(`💊 ${m.name}`, `Bugün verildi · saat ${hhmm(m.lastGivenAt)}${who}`,
-      { id: m.lastEventId || "yok", type: "med", at: m.lastGivenAt, medId: m.id, name: m.name, note: null, by: m.lastGivenBy || uid(), tz: TZ });
+  // Karttaki ✓ doza dokununca: bilgi + işareti kaldırma
+  function openMedGiven(m, t) {
+    const info = doseInfo(m, t);
+    if (!info) return;
+    const who = members.size > 1 && info.by && members.has(info.by) ? ` (${initial(info.by)})` : "";
+    medGivenModal(`💊 ${doseLabel(m, t)}`, `Bugün verildi · saat ${hhmm(info.at)}${who}`,
+      { id: info.eventId || "yok", type: "med", at: info.at, medId: m.id, name: m.name, dose: isMulti(m) ? t : null,
+        note: null, by: members.has(info.by) ? info.by : uid(), tz: TZ });
   }
   // Günlük listedeki vitamin kaydına dokununca
   function openMedEv(ev) {
     const who = members.size > 1 && ev.by ? ` (${initial(ev.by)})` : "";
-    medGivenModal(`💊 ${ev.name}`, `${dayLabel(startOfDay(ev.at))} verildi · saat ${hhmm(ev.at)}${who}`, ev);
+    medGivenModal(`💊 ${ev.name}${ev.dose ? ` (${ev.dose})` : ""}`, `${dayLabel(startOfDay(ev.at))} verildi · saat ${hhmm(ev.at)}${who}`, ev);
   }
 
-  // Takviye listesi (düzenle / ekle)
+  // Takviye listesi (düzenle / ekle) — kürü bitenler de burada ("bitti"), uzatılabilir ya da silinebilir
   function openMeds() {
     const mb = $("modal-body");
     openModal({ title: "💊 Vitamin / ilaç", autofocus: false, showCancel: false, okText: "Kapat", bodyHTML: "" });
     const ul = el("ul", "bb-list");
     for (const m of meds) {
-      const li = el("li", "bb-ev");
-      li.append(el("span", "bb-time", m.time));
-      const desc = el("div", "bb-desc"); desc.append(el("div", null, m.name));
+      const li = el("li", "bb-ev" + (courseDone(m) ? " bb-ended" : ""));
+      const desc = el("div", "bb-desc");
+      desc.append(el("div", null, `💊 ${m.name}`),
+        el("div", "bb-note", medTimes(m).join(" · ") + " · " + (courseText(m) || "her gün, sürekli")));
       li.append(desc);
       li.addEventListener("click", () => { closeModal(); openMedEdit(m); });
       ul.append(li);
     }
     mb.append(ul);
-    if (meds.length < MED_IDS.length) mb.append(btn("btn-primary bb-add", "+ Takviye ekle", () => { closeModal(); openMedEdit(); }));
-    mb.append(el("p", "hint", "Dokunarak adını/saatini değiştirebilir ya da silebilirsin. En fazla 5 takviye."));
+    if (meds.length < MED_IDS.length) mb.append(btn("btn-primary bb-add", "+ Takviye / ilaç ekle", () => { closeModal(); openMedEdit(); }));
+    mb.append(el("p", "hint", "Dokunarak adını, saatlerini, süresini değiştirebilir ya da silebilirsin. En fazla 5 takviye/ilaç (süresi bitenler de sayılır; silebilirsin)."));
   }
 
+  const DEFAULT_TIMES = { 1: ["09:00"], 2: ["09:00", "21:00"], 3: ["08:00", "14:00", "20:00"], 4: ["08:00", "12:00", "16:00", "20:00"] };
   function openMedEdit(m) {
     if (!bid) return;
     const editing = !!m;
     const freeId = MED_IDS.find((x) => !meds.some((y) => y.id === x));
-    if (!editing && !freeId) { toast("En fazla 5 takviye eklenebilir."); return; }
+    if (!editing && !freeId) { toast("En fazla 5 takviye/ilaç eklenebilir. Süresi bitenleri silebilirsin."); return; }
     const id = editing ? m.id : freeId, mref = medRef(id);
+    let times = editing ? medTimes(m) : [...DEFAULT_TIMES[1]];
+    let course = editing && !!m.endDate;
+    const startDate0 = editing && m.startDate ? m.startDate : ymd(Date.now());
     const mb = $("modal-body");
     openModal({
-      title: editing ? "💊 Takviyeyi düzenle" : "💊 Takviye ekle",
+      title: editing ? "💊 Düzenle" : "💊 Takviye / ilaç ekle",
       autofocus: false,
       bodyHTML: `
         <div class="field-label">Adı</div>
-        <input id="md-name" type="text" maxlength="40" autocomplete="off" placeholder="ör. D vitamini" />
-        <div class="field-label">Her gün saat</div>
-        <input id="md-time" type="time" aria-label="Hatırlatma saati" />
-        <p class="hint">Bu saatte ikinizin telefonuna bildirim gelir. 1 saat içinde kimse işaretlemezse bir kez daha hatırlatılır. Biriniz “Verdim”e basınca diğerinde de ✓ görünür.</p>
-        ${editing ? `<button type="button" id="md-remove" class="link-btn danger bb-del">Bu takviyeyi sil</button>` : ""}`,
+        <input id="md-name" type="text" maxlength="40" autocomplete="off" placeholder="ör. D vitamini, şurup" />
+        <div class="field-label">Günde kaç kez?</div>
+        <div class="bb-seg" id="md-count"><button type="button" data-v="1">1</button><button type="button" data-v="2">2</button><button type="button" data-v="3">3</button><button type="button" data-v="4">4</button></div>
+        <div class="field-label">Saat(ler)</div>
+        <div class="bb-times" id="md-times"></div>
+        <div class="field-label">Ne kadar sürecek?</div>
+        <div class="bb-seg" id="md-course"><button type="button" data-v="0">Sürekli</button><button type="button" data-v="1">Belirli gün</button></div>
+        <div id="md-days-box" class="bb-days hidden">
+          <input id="md-days" type="number" inputmode="numeric" min="1" max="90" aria-label="Gün sayısı" />
+          <span class="muted">gün</span>
+        </div>
+        <p class="hint" id="md-course-hint"></p>
+        <p class="hint">Her saatte ikinizin telefonuna bildirim gelir. 1 saat içinde kimse işaretlemezse bir kez daha hatırlatılır. Biriniz “Verdim”e basınca diğerinde de ✓ görünür.</p>
+        ${editing ? `<button type="button" id="md-remove" class="link-btn danger bb-del">Bunu sil</button>` : ""}`,
       okText: "Kaydet",
       onOk: () => {
         const name = mb.querySelector("#md-name").value.trim();
-        const time = mb.querySelector("#md-time").value;
         if (!name || name.length > 40) { modalError("Ad 1–40 karakter olmalı."); return false; }
-        if (!TIME_RE.test(time)) { modalError("Saati seç."); return false; }
-        const data = { name, time, tz: TZ, updatedAt: serverTimestamp(), notifyAt: nextLocal(time), remindN: 0 };
+        const ts = [...mb.querySelectorAll("#md-times input")].map((i) => i.value);
+        if (ts.some((x) => !TIME_RE.test(x))) { modalError("Tüm saatleri seç."); return false; }
+        if (new Set(ts).size !== ts.length) { modalError("Aynı saat iki kez olamaz."); return false; }
+        const sorted = [...ts].sort();
+        let startDate = null, endDate = null, days = 0;
+        if (course) {
+          days = parseInt(mb.querySelector("#md-days").value, 10);
+          if (!Number.isInteger(days) || days < 1 || days > 90) { modalError("Gün sayısı 1–90 olmalı."); return false; }
+          startDate = startDate0;
+          endDate = ymd(addDays(ymdMs(startDate), days - 1));
+          if (endDate < ymd(Date.now())) { modalError("Bu süre bugünden önce bitmiş oluyor. Gün sayısını artır."); return false; }
+        }
+        // Saatleri değişen dozların eski işaretleri atılır (kurallar: doses anahtarları yalnız times olabilir)
+        const doses = Object.fromEntries(Object.entries(editing ? dosesOf(m) : {}).filter(([k]) => sorted.includes(k)));
+        const base = { name, time: sorted[0], times: sorted, doses, startDate, endDate, tz: TZ, updatedAt: serverTimestamp(),
+          lastGivenAt: null, lastGivenBy: null, lastEventId: null };
+        const data = { ...base, ...notifyFields(base) };
         if (editing) updateDoc(mref, data).catch(fail("Takviye"));
-        else setDoc(mref, { ...data, createdBy: uid(), createdAt: serverTimestamp(), lastGivenAt: null, lastGivenBy: null, lastEventId: null }).catch(fail("Takviye"));
-        toast(editing ? "Güncellendi" : `💊 ${name} eklendi · her gün ${time}`);
+        else setDoc(mref, { ...data, createdBy: uid(), createdAt: serverTimestamp() }).catch(fail("Takviye"));
+        const when = sorted.length > 1 ? `günde ${sorted.length} kez` : `her gün ${sorted[0]}`;
+        toast(editing ? "Güncellendi" : `💊 ${name} eklendi · ${when}${endDate ? ` · ${days} gün` : ""}`);
       }
     });
-    mb.querySelector("#md-name").value = editing ? m.name : (meds.length ? "" : "D vitamini");
-    mb.querySelector("#md-time").value = editing ? m.time : "09:00";
+    const nameEl = mb.querySelector("#md-name"), timesBox = mb.querySelector("#md-times");
+    const daysBox = mb.querySelector("#md-days-box"), daysEl = mb.querySelector("#md-days"), hintEl = mb.querySelector("#md-course-hint");
+    nameEl.value = editing ? m.name : (meds.length ? "" : "D vitamini");
+    // Saat kutuları: sayısı değişince mevcut değerler korunur, eksikler varsayılanla dolar
+    const drawTimes = () => {
+      const cur = [...timesBox.querySelectorAll("input")].map((i) => i.value);
+      if (cur.length) times = cur;
+      const n = timesBox.dataset.n ? +timesBox.dataset.n : times.length;
+      const next = Array.from({ length: n }, (_, i) => times[i] || DEFAULT_TIMES[n][i]);
+      timesBox.replaceChildren(...next.map((v, i) => {
+        const inp = el("input"); inp.type = "time"; inp.value = v; inp.setAttribute("aria-label", `${i + 1}. doz saati`);
+        return inp;
+      }));
+    };
+    timesBox.dataset.n = String(times.length);
+    drawTimes();
+    wireSeg(mb.querySelector("#md-count"), times.length, (v) => { timesBox.dataset.n = v; drawTimes(); });
+    // Kür: "Belirli gün" seçilince gün sayısı + bitiş tarihi açıklaması
+    const updHint = () => {
+      if (!course) { hintEl.textContent = "Siz silene kadar her gün hatırlatılır."; return; }
+      const days = parseInt(daysEl.value, 10);
+      if (!Number.isInteger(days) || days < 1) { hintEl.textContent = ""; return; }
+      const end = addDays(ymdMs(startDate0), days - 1);
+      const startTxt = startDate0 === ymd(Date.now()) ? "Bugün başlıyor" : `${new Date(ymdMs(startDate0)).toLocaleDateString("tr-TR", { day: "numeric", month: "long" })} başladı`;
+      hintEl.textContent = `${startTxt} → son gün ${new Date(end).toLocaleDateString("tr-TR", { day: "numeric", month: "long", weekday: "long" })}. Sonra kendiliğinden durur.`;
+    };
+    daysEl.value = editing && m.endDate && m.startDate ? String(dayNum(m.endDate) - dayNum(m.startDate) + 1) : "7";
+    const paintCourse = () => { daysBox.classList.toggle("hidden", !course); updHint(); };
+    wireSeg(mb.querySelector("#md-course"), course ? "1" : "0", (v) => { course = v === "1"; paintCourse(); });
+    daysEl.addEventListener("input", updHint);
+    paintCourse();
     if (editing) mb.querySelector("#md-remove").addEventListener("click", () => {
       closeModal();
       const { id: _id, ...data } = m;
       deleteDoc(mref).catch(fail("Silme"));
       // Geri al: yeniden oluşturur (kurallar gereği oluşturan = geri alan kişi). Geçmiş kayıtlar zaten silinmez.
-      showSnackbar(`💊 ${m.name} silindi`, () => setDoc(mref, { ...data, createdBy: uid(), notifyAt: nextLocal(m.time), remindN: 0 }).catch(fail("Geri alma")));
+      showSnackbar(`💊 ${m.name} silindi`, () => setDoc(mref, { ...data, createdBy: uid(), ...notifyFields(m) }).catch(fail("Geri alma")));
     });
   }
 

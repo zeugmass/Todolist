@@ -238,6 +238,41 @@ test("vitamin kaydı: geçerli ✓ / m9 / boş ad / fazladan alan / sahte yazar 
   await assertFails(setDoc(doc(db, ...evPath("v4")), medEv({ ml: 5 })));
   await assertFails(setDoc(doc(db, ...evPath("v5")), medEv({ by: X })));
 });
+// ── ÇOK SAATLİ İLAÇ + KÜR SÜRESİ ─────────────────────────────────────────────
+const multi = (over = {}) => med({ name: "Şurup", time: "08:00", times: ["08:00", "14:00", "20:00"], doses: {},
+  startDate: "2026-10-16", endDate: "2026-10-22", notifyDose: "14:00", ...over });
+const dose = (over = {}) => ({ at: NOW - MIN, by: A, eventId: "ev1", ...over });
+test("çok saatli ilaç: 3 saat + kür ✓ / 1 saat ✓ / sürekli (bitişsiz) ✓", async () => {
+  const db = as(A);
+  await assertSucceeds(setDoc(doc(db, ...medPath("m1")), multi()));
+  await assertSucceeds(setDoc(doc(db, ...medPath("m2")), multi({ times: ["08:00"], startDate: null, endDate: null })));
+  await assertSucceeds(setDoc(doc(db, ...medPath("m3")), multi({ endDate: null })));
+});
+test("çok saatli ilaç: 5 saat / bozuk saat / time≠ilk saat / boş liste ✗", async () => {
+  const db = as(A);
+  await assertFails(setDoc(doc(db, ...medPath("m1")), multi({ times: ["06:00", "08:00", "10:00", "12:00", "14:00"], time: "06:00" })));
+  await assertFails(setDoc(doc(db, ...medPath("m1")), multi({ times: ["08:00", "25:00"] })));
+  await assertFails(setDoc(doc(db, ...medPath("m1")), multi({ time: "09:00" })));
+  await assertFails(setDoc(doc(db, ...medPath("m1")), multi({ times: [] })));
+});
+test("kür: bitiş başlangıçtan önce / başlangıçsız bitiş / bozuk tarih ✗", async () => {
+  const db = as(A);
+  await assertFails(setDoc(doc(db, ...medPath("m1")), multi({ endDate: "2026-10-10" })));
+  await assertFails(setDoc(doc(db, ...medPath("m1")), multi({ startDate: null })));
+  await assertFails(setDoc(doc(db, ...medPath("m1")), multi({ endDate: "22.10.2026" })));
+});
+test("doz işareti: eş işaretler ✓; ilacın saati olmayan anahtar / fazladan alan / metin zaman ✗", async () => {
+  await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), ...medPath("m1")), multi()));
+  await assertSucceeds(updateDoc(doc(as(B), ...medPath("m1")), { doses: { "14:00": dose({ by: B }) } }));
+  await assertSucceeds(updateDoc(doc(as(A), ...medPath("m1")), { doses: { "08:00": dose(), "14:00": dose({ by: B }) } }));
+  await assertFails(updateDoc(doc(as(A), ...medPath("m1")), { doses: { "09:30": dose() } }));
+  await assertFails(updateDoc(doc(as(A), ...medPath("m1")), { doses: { "08:00": dose({ ml: 5 }) } }));
+  await assertFails(updateDoc(doc(as(A), ...medPath("m1")), { doses: { "08:00": dose({ at: "şimdi" }) } }));
+});
+test("vitamin kaydı: doz saati ✓ / bozuk doz ✗", async () => {
+  await assertSucceeds(setDoc(doc(as(A), ...evPath("v6")), medEv({ dose: "14:00" })));
+  await assertFails(setDoc(doc(as(A), ...evPath("v7")), medEv({ dose: "2pm" })));
+});
 test("tür karıştırma: bez alanlarıyla uyku / uyku alanlarıyla bez ✗", async () => {
   const db = as(A);
   await assertFails(setDoc(doc(db, ...evPath("m1")), { ...sleep(), type: "diaper" }));

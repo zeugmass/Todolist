@@ -355,6 +355,27 @@ input:focus { border-color: var(--accent); }
 .bb-med.done .bb-med-state { background: transparent; color: var(--text); padding: 8px 0; font-variant-numeric: tabular-nums; }
 .bb-med.done .bb-med-name { color: var(--muted); }
 .bb-med:active { opacity: .85; }
+/* Günde birden fazla doz: ad üstte, her doz ayrı düğme (saat + durum) */
+.bb-med.multi { display: block; }
+.bb-med.multi:active { opacity: 1; }
+.bb-doses { display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); gap: 6px; margin-top: 8px; }
+.bb-dose {
+  display: flex; flex-direction: column; align-items: center; gap: 1px; min-width: 0;
+  padding: 7px 4px; border-radius: 10px; border: 2px solid var(--accent);
+  background: var(--accent); color: var(--accent-contrast);
+}
+.bb-dose-t { font-weight: 700; font-size: 15px; font-variant-numeric: tabular-nums; }
+.bb-dose-s { font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.bb-dose.late { border-color: var(--danger); }
+.bb-dose.done { background: transparent; color: var(--text); border-color: var(--border); }
+.bb-dose.done .bb-dose-s { color: var(--muted); }
+.bb-dose:active { opacity: .85; }
+/* Düzenleme penceresi: saat kutuları + gün sayısı */
+.bb-times { display: grid; grid-template-columns: 1fr 1fr; gap: 0 8px; }
+#modal-body .bb-times input { margin-bottom: 8px; }
+.bb-days { display: flex; align-items: center; gap: 8px; }
+#modal-body .bb-days input { width: 90px; margin: 0; }
+.bb-ended { opacity: .55; }
 .bb-date { width: 58px; font-size: 14px; }
 .bb-add { margin: 12px 0 4px; }
 /* Grafikler (tek seri; renkler tema değişkenlerinden → açık/koyu tema otomatik) */

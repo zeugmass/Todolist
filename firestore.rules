@@ -157,21 +157,56 @@ service cloud.firestore {
       }
       // Vitamin/ilaç "verildi" kaydı: hangi takviye (m1..m5) + o anki adı (geçmiş, ad değişse de okunur)
       function validMedEv(d) {
-        return d.keys().hasOnly(['type', 'at', 'medId', 'name', 'note', 'by', 'createdAt', 'updatedAt', 'tz'])
+        return d.keys().hasOnly(['type', 'at', 'medId', 'name', 'dose', 'note', 'by', 'createdAt', 'updatedAt', 'tz'])
           && d.type == 'med' && validCommon(d)
           && d.medId in ['m1', 'm2', 'm3', 'm4', 'm5']
-          && d.name is string && d.name.size() >= 1 && d.name.size() <= 40;
+          && d.name is string && d.name.size() >= 1 && d.name.size() <= 40
+          && (!('dose' in d) || d.dose == null || validHm(d.dose));
+      }
+      function validHm(t) { return t is string && t.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$'); }
+      function validYmd(s) { return s is string && s.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$'); }
+      // Bir dozun "verildi" bilgisi: ne zaman, kim, hangi kayıt
+      function validDose(x) {
+        return x is map && x.keys().hasOnly(['at', 'by', 'eventId'])
+          && x.at is int && x.at < request.time.toMillis() + 86400000
+          && x.by is string && x.by.size() <= 128
+          && x.eventId is string && x.eventId.size() <= 40;
+      }
+      // Günde 1–4 saat ("SS:DD"); kuralların döngüsü olmadığı için her sıra tek tek denetlenir
+      function validTimes(ts) {
+        return ts is list && ts.size() >= 1 && ts.size() <= 4
+          && validHm(ts[0])
+          && (ts.size() < 2 || validHm(ts[1]))
+          && (ts.size() < 3 || validHm(ts[2]))
+          && (ts.size() < 4 || validHm(ts[3]));
+      }
+      // doses: { "08:00": {at,by,eventId}, ... } — anahtarlar yalnız o ilacın saatleri olabilir
+      function validDoses(d) {
+        return d.doses is map && d.doses.size() <= 4 && ('times' in d) && d.doses.keys().hasOnly(d.times)
+          && (!(d.times[0] in d.doses) || validDose(d.doses[d.times[0]]))
+          && (d.times.size() < 2 || !(d.times[1] in d.doses) || validDose(d.doses[d.times[1]]))
+          && (d.times.size() < 3 || !(d.times[2] in d.doses) || validDose(d.doses[d.times[2]]))
+          && (d.times.size() < 4 || !(d.times[3] in d.doses) || validDose(d.doses[d.times[3]]));
       }
       function validEvent(d) {
         return (d.type == 'feed' && validFeed(d)) || validDiaper(d) || validSleep(d) || validGrowth(d) || validMedEv(d);
       }
-      // Günlük takviye (D vitamini vb.): ad, saat "SS:DD", son verilme bilgisi, sunucunun hatırlatma zamanı.
+      // Günlük takviye/ilaç: ad, günde 1–4 saat (times; time = ilk saat, eski sürümler için), dozların
+      // verilme bilgisi, isteğe bağlı kür (startDate–endDate), sunucunun sıradaki hatırlatması (notifyAt/notifyDose).
       // Kimlik yalnız m1..m5 olabilir → bebek başına EN FAZLA 5 takviye.
+      // lastGivenAt/By/lastEventId: sürüm 12'nin tek-saat alanları (eski belgeler için hâlâ izinli).
       function validMed(d) {
-        return d.keys().hasOnly(['name', 'time', 'tz', 'createdAt', 'createdBy', 'updatedAt',
+        return d.keys().hasOnly(['name', 'time', 'times', 'doses', 'startDate', 'endDate', 'notifyDose',
+                                 'tz', 'createdAt', 'createdBy', 'updatedAt',
                                  'lastGivenAt', 'lastGivenBy', 'lastEventId', 'notifyAt', 'remindN'])
           && d.name is string && d.name.size() >= 1 && d.name.size() <= 40
-          && d.time is string && d.time.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$')
+          && validHm(d.time)
+          && (!('times' in d) || (validTimes(d.times) && d.times[0] == d.time))
+          && (!('doses' in d) || validDoses(d))
+          && (!('notifyDose' in d) || d.notifyDose == null || validHm(d.notifyDose))
+          && (!('startDate' in d) || d.startDate == null || validYmd(d.startDate))
+          && (!('endDate' in d) || d.endDate == null
+              || (validYmd(d.endDate) && d.get('startDate', null) != null && d.endDate >= d.startDate))
           && (!('tz' in d) || (d.tz is string && d.tz.size() <= 64))
           && (!('lastGivenAt' in d) || d.lastGivenAt == null
               || (d.lastGivenAt is int && d.lastGivenAt < request.time.toMillis() + 86400000))

@@ -70,23 +70,51 @@ function nextOccurrence(t, startTodayMs, tz) {
   return msInTz(sp.y, sp.mo, sp.day, h, mi, tz);
 }
 
-// Takviye (vitamin/ilaç) hatırlatmasının bir adımı: belge + şimdi → { upd: yazılacak alanlar, send: bildirim? }
-// "Verildi mi" o günün (İLK hatırlatmanın günü, takviyenin tz'si) başından beri bakılır; böylece
-// 23:30'daki takviyenin 00:30'daki 2. hatırlatması da doğru güne göre karar verir.
+// ── Takviye / ilaç ──────────────────────────────────────────────────────────
+// Belge: günde 1–4 saat (times; eski sürüm 12 belgelerinde yalnız time), dozların verilme bilgisi
+// (doses["SS:DD"].at; eski belgede lastGivenAt), isteğe bağlı kür (startDate–endDate, takviyenin tz'sinde).
+const HOUR_MS = 3600000;
+function medTimes(m) { return (Array.isArray(m.times) && m.times.length ? m.times : [m.time || "09:00"]).slice().sort(); }
+function ymdInTz(ms, tz) { const p = partsInTz(ms, tz); return `${p.y}-${String(p.mo + 1).padStart(2, "0")}-${String(p.day).padStart(2, "0")}`; }
+function doseGivenAt(m, t) {
+  if (m.doses) return (m.doses[t] && m.doses[t].at) || 0;
+  return t === medTimes(m)[0] ? (m.lastGivenAt || 0) : 0; // sürüm 12 belgesi
+}
+// "after"dan SONRAKİ ilk doz (kür aralığında) → { at, dose } ya da kür bittiyse null
+function nextDoseAt(m, after) {
+  const tz = m.tz || DEFAULT_TZ, times = medTimes(m), p = partsInTz(after, tz);
+  for (let d = 0; d <= 2; d++) {
+    for (const t of times) {
+      const [h, mi] = t.split(":").map((x) => parseInt(x, 10));
+      const at = msInTz(p.y, p.mo, p.day + d, h, mi, tz);
+      if (at <= after) continue;
+      const day = ymdInTz(at, tz);
+      if (m.startDate && day < m.startDate) continue;
+      if (m.endDate && day > m.endDate) return null;
+      return { at, dose: t };
+    }
+  }
+  return null;
+}
+// Hatırlatmanın bir adımı: belge + şimdi → { upd: yazılacak alanlar, send: bildirim?, dose: hangi doz }
+// "Verildi mi" o dozun İLK hatırlatmasının gününün başından beri bakılır (23:30 dozunun 00:30'daki
+// 2. hatırlatması da doğru güne göre karar verir). 2. hatırlatma 1 saat sonra; ama sonraki doz o
+// 1 saat içindeyse tekrar yerine doğrudan sonraki doza geçilir (doz atlanmasın).
 function medStep(m, now) {
   const tz = m.tz || DEFAULT_TZ;
-  const [h, mi] = String(m.time || "09:00").split(":").map((x) => parseInt(x, 10));
-  const nextDaily = (after) => {
-    const p = partsInTz(after, tz);
-    const c = msInTz(p.y, p.mo, p.day, h, mi, tz);
-    return c > after ? c : msInTz(p.y, p.mo, p.day + 1, h, mi, tz);
-  };
-  const firstAt = m.notifyAt - (m.remindN ? 3600000 : 0);
-  const given = !!m.lastGivenAt && m.lastGivenAt >= startOfToday(firstAt, tz);
+  const dose = m.notifyDose || medTimes(m)[0];
+  const firstAt = m.notifyAt - (m.remindN ? HOUR_MS : 0);
+  const given = doseGivenAt(m, dose) >= startOfToday(firstAt, tz);
   const stale = now - m.notifyAt > 30 * 60000; // sunucu kaçırmış/eski → göndermeden ileri al
-  if (given || stale) return { upd: { notifyAt: nextDaily(now), remindN: 0 }, send: false };
-  if (!m.remindN) return { upd: { notifyAt: m.notifyAt + 3600000, remindN: 1 }, send: true };
-  return { upd: { notifyAt: nextDaily(now), remindN: 0 }, send: true };
+  const nd = nextDoseAt(m, now);
+  const next = nd ? { notifyAt: nd.at, notifyDose: nd.dose, remindN: 0 } : { notifyAt: null, notifyDose: null, remindN: 0 };
+  if (given || stale) return { upd: next, send: false, dose };
+  if (!m.remindN) {
+    const repeat = m.notifyAt + HOUR_MS;
+    if (nd && nd.at <= repeat) return { upd: next, send: true, dose };
+    return { upd: { notifyAt: repeat, notifyDose: dose, remindN: 1 }, send: true, dose };
+  }
+  return { upd: next, send: true, dose };
 }
 
 async function tokensForSpace(sid) {
@@ -219,7 +247,7 @@ exports.sendReminders = onSchedule(
     const medSnap = await db.collectionGroup("meds").where("notifyAt", "<=", now).get();
     for (const mSnap of medSnap.docs) {
       const m = mSnap.data();
-      const { upd, send } = medStep(m, now);
+      const { upd, send, dose } = medStep(m, now);
       try { await mSnap.ref.update(upd); } catch (e) { continue; }
       if (!send) continue;
       const sid = mSnap.ref.path.split("/")[1]; // spaces/{sid}/babies/{bid}/meds/{mid}
@@ -231,7 +259,8 @@ exports.sendReminders = onSchedule(
           webpush: { headers: { Urgency: "high", TTL: "3600" } },
           data: {
             title: "💊 Takviye zamanı",
-            body: `${m.name} — bugün henüz işaretlenmedi` + (m.remindN ? " (2. hatırlatma)" : ""),
+            body: (medTimes(m).length > 1 ? `${m.name} (${dose}) — henüz işaretlenmedi` : `${m.name} — bugün henüz işaretlenmedi`)
+              + (m.remindN ? " (2. hatırlatma)" : ""),
             url: "./", tag: "med-" + mSnap.id
           }
         });
