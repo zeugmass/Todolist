@@ -561,9 +561,9 @@ export function createBabyTracker(ctx) {
       autofocus: false,
       bodyHTML: `
         <div class="bb-amount">
-          <button type="button" class="bb-step" data-step="-10" aria-label="10 ml azalt">−</button>
+          <button type="button" class="bb-step" data-step="-5" aria-label="5 ml azalt">−</button>
           <div class="bb-amount-val"><input id="f-ml" type="number" inputmode="numeric" min="1" max="500" aria-label="Miktar (ml)" /><span class="muted">ml</span></div>
-          <button type="button" class="bb-step" data-step="10" aria-label="10 ml artır">+</button>
+          <button type="button" class="bb-step" data-step="5" aria-label="5 ml artır">+</button>
         </div>
         <div class="bb-chips" id="f-chips">${ML_CHIPS.map((v) => `<button type="button" data-v="${v}">${v}</button>`).join("")}</div>
         <div class="field-label">İçerik (isteğe bağlı)</div>

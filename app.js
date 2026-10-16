@@ -7,7 +7,7 @@ import {
   initializeFirestore, persistentLocalCache, persistentSingleTabManager,
   collection, doc, addDoc, setDoc, updateDoc, deleteDoc, getDoc, getDocs,
   onSnapshot, query, orderBy, serverTimestamp, writeBatch, increment, deleteField, arrayUnion, Timestamp,
-  connectFirestoreEmulator
+  connectFirestoreEmulator, disableNetwork, enableNetwork, getDocFromServer
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { getMessaging, getToken, onMessage, isSupported } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging.js";
 import { initializeAppCheck, ReCaptchaEnterpriseProvider } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app-check.js";
@@ -18,7 +18,7 @@ import { createBabyTracker } from "./baby.js";
 const VAPID_KEY = "BGqR76axu5G6VDL1SxXPF4MMDfkF1vzHgGBe8rvr9n01Q0Gl-t3w4jXEtlqDn4wNGI22K1LKHOyvyKPl9mH5-ls";
 
 // Sürüm — her güncellemede artır (menüde altta gösterilir; güncelleme takibi için).
-const APP_VERSION = "12 · 2026-09-28";
+const APP_VERSION = "13 · 2026-10-16";
 
 // Cihazın saat dilimi (IANA, örn. "Europe/Paris"). Görevlere yazılır ki sunucu tekrar
 // hesabını doğru yere göre yapsın (kullanıcı hangi ülkedeyse ona göre).
@@ -539,13 +539,44 @@ function scheduleResync(reason) {
   resyncTimer = setTimeout(() => { if (spaceId) { establishSpaceListeners(); subscribeTodos(activeListId); } }, 1500);
 }
 
-// Elle yenile (header'daki buton)
-function manualResync() {
-  dbg("elle yenile");
-  if (spaceId) { establishSpaceListeners(); subscribeTodos(activeListId); }
-  else if (currentUser) { startUserDoc(); }
-  toast("Yenilendi");
+// GERÇEK YENİLEME: iPhone, uygulama arka plandayken bağlantıyı sessizce koparabiliyor; SDK bunu
+// fark etmeden "bağlıyım" sanıp eski (önbellekteki) veriyi gösteriyordu. Dinleyicileri yeniden
+// kurmak AYNI kopuk hattı kullandığı için işe yaramıyordu. Burada hattı tamamen kapatıp yeniden
+// açıyoruz (uygulamayı kapatıp açmanın etkisi), sonra sunucuya küçük bir okuma ile ulaşabildiğimizi doğruluyoruz.
+const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("zaman aşımı")), ms))]);
+let refreshing = null;
+function hardRefresh({ manual = false } = {}) {
+  if (refreshing) return refreshing; // üst üste basılırsa aynı işlemi bekle
+  refreshing = (async () => {
+    dbg(manual ? "elle yenile (bağlantı yeniden kuruluyor)" : "otomatik yenile (öne gelindi/çevrimiçi)");
+    try {
+      await withTimeout(disableNetwork(db), 5000);
+      await withTimeout(enableNetwork(db), 5000);
+    } catch (e) { dbg("bağlantı yeniden kurma HATA: " + (e.code || e.message)); }
+    if (manual) {
+      // Elle yenilemede dinleyicileri de baştan kur (otomatik yenilemede gerek yok; ekran titremesin)
+      if (viewMode === "baby") baby.resync();
+      if (spaceId) { resyncAttempts = 0; establishSpaceListeners(); subscribeTodos(activeListId); }
+      else if (currentUser) startUserDoc();
+    }
+    let ok = false;
+    if (currentUser) {
+      try { await withTimeout(getDocFromServer(doc(db, "users", currentUser.uid)), 8000); ok = true; }
+      catch (e) { dbg("sunucu kontrolü HATA: " + (e.code || e.message)); }
+    }
+    if (manual) toast(ok ? "✓ Güncel" : "⚠️ İnternete ulaşılamadı — gösterilen bilgiler eski olabilir");
+    return ok;
+  })().finally(() => { refreshing = null; });
+  return refreshing;
 }
+// Uygulama arka plandan öne gelince (20 sn'den uzun gizli kaldıysa) ve internet geri gelince kendiliğinden yenile
+let hiddenAt = 0;
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") { hiddenAt = Date.now(); return; }
+  if (currentUser && hiddenAt && Date.now() - hiddenAt > 20000) hardRefresh();
+  hiddenAt = 0;
+});
+window.addEventListener("online", () => { if (currentUser) hardRefresh(); });
 
 function setActiveList(listId) {
   const changed = activeListId !== listId;
@@ -887,8 +918,7 @@ $("menu-overlay").addEventListener("click", closeMenu);
 $("btn-refresh").addEventListener("click", () => {
   const b = $("btn-refresh");
   b.classList.add("spinning");
-  if (viewMode === "baby") { baby.resync(); toast("Yenilendi"); } else manualResync();
-  setTimeout(() => b.classList.remove("spinning"), 700);
+  hardRefresh({ manual: true }).finally(() => b.classList.remove("spinning")); // bitene kadar döner
 });
 $("completed-header").addEventListener("click", () => { completedCollapsed = !completedCollapsed; renderTodos(); });
 
