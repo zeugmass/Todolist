@@ -7,7 +7,8 @@ import {
   initializeFirestore, persistentLocalCache, persistentSingleTabManager,
   collection, doc, addDoc, setDoc, updateDoc, deleteDoc, getDoc, getDocs,
   onSnapshot, query, orderBy, serverTimestamp, writeBatch, increment, deleteField, arrayUnion, Timestamp,
-  connectFirestoreEmulator, disableNetwork, enableNetwork, getDocFromServer, terminate, clearIndexedDbPersistence
+  connectFirestoreEmulator, disableNetwork, enableNetwork, getDocFromServer, terminate, clearIndexedDbPersistence,
+  waitForPendingWrites
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { getMessaging, getToken, onMessage, isSupported } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging.js";
 import { initializeAppCheck, ReCaptchaEnterpriseProvider, getToken as getAppCheckToken } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app-check.js";
@@ -18,7 +19,7 @@ import { createBabyTracker } from "./baby.js";
 const VAPID_KEY = "BGqR76axu5G6VDL1SxXPF4MMDfkF1vzHgGBe8rvr9n01Q0Gl-t3w4jXEtlqDn4wNGI22K1LKHOyvyKPl9mH5-ls";
 
 // Sürüm — her güncellemede artır (menüde altta gösterilir; güncelleme takibi için).
-const APP_VERSION = "15 · 2026-10-27";
+const APP_VERSION = "16 · 2026-10-27";
 
 // Cihazın saat dilimi (IANA, örn. "Europe/Paris"). Görevlere yazılır ki sunucu tekrar
 // hesabını doğru yere göre yapsın (kullanıcı hangi ülkedeyse ona göre).
@@ -324,6 +325,8 @@ onAuthStateChanged(auth, (user) => {
     updateNotifButton();
     refreshNotifOnLaunch(); // izin varsa jetonu sessizce tazele
     startUserDoc();
+    noteClient(true);
+    setTimeout(checkForUpdate, 8000);
   } else {
     cleanupAll();
     hide($("screen-loading")); hide($("screen-main"));
@@ -595,18 +598,52 @@ function hardRefresh({ manual = false, resubscribe = manual } = {}) {
 let hiddenAt = 0;
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") { hiddenAt = Date.now(); return; }
-  if (currentUser && hiddenAt && Date.now() - hiddenAt > 20000) hardRefresh();
+  if (currentUser && hiddenAt && Date.now() - hiddenAt > 20000) { hardRefresh(); checkForUpdate(); noteClient(); }
   hiddenAt = 0;
 });
+
+// KENDİLİĞİNDEN GÜNCELLEME: iPhone uygulamayı günlerce bellekte tutabiliyor → eski sürüm (eski hatalarıyla)
+// çalışmaya devam ediyordu. Öne gelince sunucudaki app.js'in sürümüne bakılır; farklıysa sayfa yenilenir.
+// (Gönderilmemiş kayıtlar telefonda kalıcı saklandığı için yenileme onları kaybettirmez.)
+async function checkForUpdate() {
+  try {
+    const txt = await withTimeout(fetch(`./app.js?u=${Date.now()}`, { cache: "no-store" }).then((r) => r.text()), 10000);
+    const m = /APP_VERSION = "([^"]+)"/.exec(txt);
+    if (!m || m[1] === APP_VERSION) return;
+    if (sessionStorage.getItem("reloadedFor") === m[1]) return; // aynı sürüm için bir kez dene (döngü olmasın)
+    const busy = !$("modal-overlay").classList.contains("hidden") || ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName);
+    if (busy) { setTimeout(checkForUpdate, 60000); return; } // yazı yazılıyorken bölme
+    sessionStorage.setItem("reloadedFor", m[1]);
+    dbg(`yeni sürüm ${m[1]} → yeniden yükleniyor`);
+    toast("Yeni sürüm yükleniyor…");
+    setTimeout(() => location.reload(), 900);
+  } catch (e) { dbg("sürüm kontrolü atlandı: " + (e.message || e)); }
+}
+setInterval(() => { if (currentUser && document.visibilityState === "visible") checkForUpdate(); }, 30 * 60000);
+
+// Bu telefonun sürümü ve son görülme zamanı (kendi kullanıcı belgesine). Sorun olduğunda hangi telefonun
+// hangi sürümde olduğunu ve sunucuya en son ne zaman ulaşabildiğini uzaktan görmek için. En fazla 10 dk'da bir.
+let clientNotedAt = 0;
+function noteClient(force = false) {
+  if (!currentUser || (!force && Date.now() - clientNotedAt < 10 * 60000)) return;
+  clientNotedAt = Date.now();
+  updateDoc(doc(db, "users", currentUser.uid), { client: { v: APP_VERSION, at: serverTimestamp(), tz: TZ } })
+    .catch((e) => dbg("sürüm notu HATA: " + (e.code || e.message)));
+}
 window.addEventListener("online", () => { if (currentUser) hardRefresh(); });
 
 // ONAR: telefondaki Firestore önbelleğini (IndexedDB) ve uygulama dosyası önbelleğini siler, sayfayı
 // yeniden yükler. Bozulmuş/eski önbellek yüzünden telefon güncel veriyi hiç göstermiyorsa çare budur
 // (uygulamayı silip yeniden eklemenin etkisi). Oturum (giriş) korunur; sunucudaki veriye dokunulmaz.
-function repairApp() {
+async function repairApp() {
+  // Gönderilmemiş kayıt varsa onarım onları SİLER → önce bak, varsa açıkça uyar
+  let unsent = false;
+  try { await withTimeout(waitForPendingWrites(db), 2500); } catch { unsent = true; }
   openModal({
-    title: "🔧 Bağlantıyı onar", autofocus: false, okText: "Onar", okDanger: true,
-    bodyHTML: '<p class="hint">Bu telefondaki geçici veriler silinir ve uygulama yeniden açılır. <b>Hesabından çıkmazsın</b>, tüm kayıtlar sunucuda durur ve yeniden yüklenir.</p><p class="hint">Not: İnternet yokken girip henüz gönderilemeyen bir kayıt varsa o kaybolabilir.</p>',
+    title: "🔧 Bağlantıyı onar", autofocus: false, okText: unsent ? "Yine de onar" : "Onar", okDanger: true,
+    bodyHTML: '<p class="hint">Bu telefondaki geçici veriler silinir ve uygulama yeniden açılır. <b>Hesabından çıkmazsın</b>, tüm kayıtlar sunucuda durur ve yeniden yüklenir.</p>'
+      + (unsent ? '<p class="hint err"><b>⚠️ Bu telefonda henüz sunucuya GÖNDERİLEMEMİŞ kayıt var. Onarırsan o kayıt(lar) kaybolur.</b> Önce internetin iyi olduğu bir yerde uygulamayı kapatıp açmayı dene; olmazsa kayıtları not alıp sonra yeniden gir.</p>'
+        : '<p class="hint">Bu telefonda gönderilmeyi bekleyen kayıt yok.</p>'),
     onOk: () => { doRepair(); }
   });
 }
@@ -646,7 +683,10 @@ async function openDiagnostics() {
   if (ra) row("Son onarım", new Date(ra).toLocaleString("tr-TR"));
   const bh = baby.health();
   if (bh) row("Bebek verisi", bh.text, bh.ok);
+  const pw = row("Gönderilmeyi bekleyen kayıt", "kontrol ediliyor…");
   const clock = row("Telefon saati", "kontrol ediliyor…");
+  try { await withTimeout(waitForPendingWrites(db), 4000); pw.textContent = "yok"; pw.parentElement.className = "good"; }
+  catch { pw.textContent = "VAR — sunucuya gönderilemiyor"; pw.parentElement.className = "bad"; noteDiag("tanı: gönderilmemiş kayıt var"); }
   const ac = row("Güvenlik jetonu (App Check)", "kontrol ediliyor…");
   const srv = row("Sunucudan okuma", "kontrol ediliyor…");
   // Saat farkı: App Check jetonları saat çok yanlışsa reddedilebilir

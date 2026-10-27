@@ -383,6 +383,7 @@ input:focus { border-color: var(--accent); }
   border: 2px solid var(--danger); border-radius: 14px; padding: 12px 14px; background: var(--surface-2);
 }
 .bb-health-msg { font-weight: 600; line-height: 1.35; }
+.bb-unsent { font-size: 12.5px; color: var(--danger); font-weight: 600; margin-top: 2px; }
 .bb-health-acts { display: flex; gap: 8px; margin-top: 10px; }
 .bb-health-acts button { flex: 1; padding: 10px 6px; font-size: 15px; }
 /* Tanı ekranı */

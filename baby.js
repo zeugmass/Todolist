@@ -8,7 +8,7 @@
 import {
   collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, getDocs,
   query, where, orderBy, limit, serverTimestamp, writeBatch, FieldPath, deleteField,
-  getDocsFromServer, getDocFromCache
+  getDocsFromServer, getDocFromCache, waitForPendingWrites
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const MIN = 60000, HOUR = 3600000, DAY = 86400000;
@@ -293,7 +293,23 @@ export function createBabyTracker(ctx) {
       if (!snap.empty) {
         try { await getDocFromCache(evRef(snap.docs[0].id)); } catch { missing = true; }
       }
-      if (!missing) { health = { state: "ok", checkedAt: Date.now(), err: "" }; return; }
+      if (!missing) {
+        // Okuma tamam. Peki bu telefonda girilip sunucuya GİDEMEYEN kayıt var mı? (eşin onu göremez)
+        let unsent = false;
+        try { await withTimeout(waitForPendingWrites(db), 15000); } catch { unsent = true; }
+        if (!unsent) { health = { state: "ok", checkedAt: Date.now(), err: "" }; return; }
+        if (Date.now() - lastAutoFixAt > 120000) {
+          lastAutoFixAt = Date.now();
+          dbg("GÖNDERİLEMEYEN KAYIT HATA: 15 sn'de gitmedi → bağlantı yenileniyor");
+          healthBusy = false;
+          await ctx.refresh?.();
+          setTimeout(() => checkFreshness(), 6000);
+          return;
+        }
+        health = { state: "unsent", checkedAt: health.checkedAt, err: "gönderilemeyen kayıt" };
+        dbg("GÖNDERİLEMEYEN KAYIT HATA: yenilemeye rağmen gitmedi");
+        return;
+      }
       if (Date.now() - lastAutoFixAt > 120000) {
         // İlk tespit: bağlantıyı baştan kur (dinleyiciler de) ve birkaç saniye sonra yeniden bak
         lastAutoFixAt = Date.now();
@@ -338,11 +354,14 @@ export function createBabyTracker(ctx) {
     if (s === "checking") { box.replaceChildren(el("span", null, "⏳ Sunucuyla kontrol ediliyor…")); return; }
     const msg = s === "stale"
       ? "⚠️ Bu telefon güncel kayıtları alamıyor. Eşinin son girdiği kayıtlar burada GÖRÜNMEYEBİLİR."
-      : "⚠️ Sunucuya ulaşılamıyor. Gösterilen bilgiler eski olabilir.";
+      : s === "unsent"
+        ? "⚠️ Bu telefonda girilen kayıt SUNUCUYA GÖNDERİLEMEDİ — eşin göremez. İnterneti kontrol et; olmazsa uygulamayı tamamen kapatıp aç."
+        : "⚠️ Sunucuya ulaşılamıyor. Gösterilen bilgiler eski olabilir.";
     const last = health.checkedAt ? ` Son başarılı kontrol: ${hhmm(health.checkedAt)}.` : "";
     const acts = el("div", "bb-health-acts");
-    acts.append(btn("btn-secondary", "↻ Tekrar dene", () => { health = { ...health, state: "checking" }; paintHealth(); lastAutoFixAt = 0; checkFreshness(); }),
-      btn("btn-primary", "🔧 Onar", () => ctx.repair?.()));
+    acts.append(btn("btn-secondary", "↻ Tekrar dene", () => { health = { ...health, state: "checking" }; paintHealth(); lastAutoFixAt = 0; checkFreshness(); }));
+    // Gönderilmemiş kayıt varken "Onar" önerilmez (önbelleği silmek o kaydı kaybettirir)
+    if (s !== "unsent") acts.append(btn("btn-primary", "🔧 Onar", () => ctx.repair?.()));
     box.replaceChildren(el("div", "bb-health-msg", msg + last), acts, btn("link-btn bb-health-diag", "Tanı ekranı", () => ctx.diagnose?.()));
   }
   function paintHealth() {
@@ -378,8 +397,13 @@ export function createBabyTracker(ctx) {
     dayEvents = [];
     if (!bid) return;
     const q = query(evCol(), where("at", ">=", dayStart), where("at", "<", addDays(dayStart, 1)), orderBy("at", "desc"));
-    dayUnsub = onSnapshot(q, (snap) => {
-      dayEvents = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    // includeMetadataChanges: kaydın sunucuya gidip gitmediği (hasPendingWrites) değişince de haber ver
+    dayUnsub = onSnapshot(q, { includeMetadataChanges: true }, (snap) => {
+      dayEvents = snap.docs.map((d) => {
+        const ev = { id: d.id, ...d.data() };
+        Object.defineProperty(ev, "_pending", { value: d.metadata.hasPendingWrites, enumerable: false }); // yazmalara karışmasın
+        return ev;
+      });
       render();
     }, (e) => dbg("gün kayıtları HATA: " + (e.code || e.message)));
   }
@@ -564,6 +588,8 @@ export function createBabyTracker(ctx) {
       const desc = el("div", "bb-desc");
       desc.append(el("div", null, evText(ev)));
       if (ev.note) desc.append(el("div", "bb-note", ev.note));
+      // Henüz sunucuya ulaşmamış kayıt: eşin bunu GÖREMEZ → açıkça göster
+      if (ev._pending) desc.append(el("div", "bb-unsent", "⏳ Sunucuya gönderiliyor… (eşin henüz göremez)"));
       li.append(desc);
       if (members.size > 1 && ev.by) {
         const chip = el("span", "who-chip", initial(ev.by));
@@ -1410,7 +1436,8 @@ export function createBabyTracker(ctx) {
   function healthInfo() {
     if (!sid || !bid) return null;
     const t = health.checkedAt ? ` (${hhmm(health.checkedAt)})` : "";
-    const map = { ok: "güncel" + t, checking: "kontrol ediliyor", stale: "ESKİ — son kayıtlar gelmiyor" + t, offline: "sunucuya ulaşılamıyor: " + health.err };
+    const map = { ok: "güncel" + t, checking: "kontrol ediliyor", stale: "ESKİ — son kayıtlar gelmiyor" + t,
+      offline: "sunucuya ulaşılamıyor: " + health.err, unsent: "GÖNDERİLEMEYEN kayıt var" };
     return { text: map[health.state] || health.state, ok: health.state === "ok" ? true : health.state === "checking" ? undefined : false };
   }
 
