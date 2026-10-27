@@ -7,7 +7,8 @@
 // ============================================================================
 import {
   collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, getDocs,
-  query, where, orderBy, limit, serverTimestamp, writeBatch, FieldPath, deleteField
+  query, where, orderBy, limit, serverTimestamp, writeBatch, FieldPath, deleteField,
+  getDocsFromServer, getDocFromCache
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const MIN = 60000, HOUR = 3600000, DAY = 86400000;
@@ -235,6 +236,11 @@ export function createBabyTracker(ctx) {
   let dayStart = startOfDay(Date.now()), followToday = true;
   const members = new Map(); // uid -> e-posta (baş harf için)
   let ticker = null, tickCount = 0;
+  // TAZELİK KONTROLÜ: "telefondaki veri sunucuyla aynı mı?" — SDK'nın kendi "bağlıyım" durumuna güvenmeden,
+  // sunucudaki EN SON kaydın bu telefonda olup olmadığına bakar. Eşin kaydı gelmemişse önce sessizce
+  // bağlantıyı yeniler; hâlâ yoksa ekranda açık uyarı + "Onar" gösterir (eski veri asla sessizce gösterilmez).
+  let health = { state: "checking", checkedAt: 0, err: "" }; // checking | ok | stale | offline
+  let healthTimer = null, healthBusy = false, lastAutoFixAt = 0;
 
   const uid = () => getUser()?.uid;
   const babyRef = () => doc(db, "spaces", sid, "babies", bid);
@@ -271,6 +277,77 @@ export function createBabyTracker(ctx) {
     }, () => {});
 
     ticker = setInterval(updateLive, 1000);
+    healthTimer = setInterval(() => checkFreshness(), 60000);
+  }
+
+  const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("zaman aşımı")), ms))]);
+  async function checkFreshness() {
+    if (!sid || !bid || healthBusy || document.visibilityState !== "visible") return;
+    healthBusy = true;
+    const at = { sid, bid };
+    try {
+      // Sunucudaki en son kayıt (tek belge okuması) → bu telefonun önbelleğinde var mı?
+      const snap = await withTimeout(getDocsFromServer(query(evCol(), orderBy("at", "desc"), limit(1))), 12000);
+      if (at.sid !== sid || at.bid !== bid) return; // bu arada bebek/alan değiştiyse sonucu yok say
+      let missing = false;
+      if (!snap.empty) {
+        try { await getDocFromCache(evRef(snap.docs[0].id)); } catch { missing = true; }
+      }
+      if (!missing) { health = { state: "ok", checkedAt: Date.now(), err: "" }; return; }
+      if (Date.now() - lastAutoFixAt > 120000) {
+        // İlk tespit: bağlantıyı baştan kur (dinleyiciler de) ve birkaç saniye sonra yeniden bak
+        lastAutoFixAt = Date.now();
+        dbg("ESKİ VERİ: sunucudaki son kayıt bu telefonda yok → bağlantı yenileniyor");
+        healthBusy = false;
+        await ctx.refresh?.();
+        setTimeout(() => checkFreshness(), 6000);
+        return;
+      }
+      health = { state: "stale", checkedAt: Date.now(), err: "sunucudaki son kayıt telefona gelmedi" };
+      dbg("ESKİ VERİ: yenilemeye rağmen son kayıt gelmedi");
+    } catch (e) {
+      dbg("tazelik kontrolü HATA: " + (e.code || e.message));
+      if (navigator.onLine && Date.now() - lastAutoFixAt > 120000) {
+        // İnternet var ama sunucu cevap vermiyor → bağlantıyı baştan kurup bir kez daha dene
+        lastAutoFixAt = Date.now();
+        healthBusy = false;
+        await ctx.refresh?.();
+        setTimeout(() => checkFreshness(), 6000);
+        return;
+      }
+      health = { state: "offline", checkedAt: health.checkedAt, err: e.code || e.message };
+    } finally {
+      healthBusy = false;
+      paintHealth();
+    }
+  }
+  // Uygulama öne gelince (app.js bağlantıyı zaten yeniliyor) birkaç saniye sonra tazeliği doğrula
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && sid && bid) setTimeout(() => checkFreshness(), 4000);
+  });
+
+  function healthBar() {
+    const box = el("div", "bb-health"); box.id = "bb-health";
+    fillHealth(box);
+    return box;
+  }
+  function fillHealth(box) {
+    const s = health.state;
+    box.className = "bb-health " + (s === "ok" ? "ok" : s === "checking" ? "wait" : "bad");
+    if (s === "ok") { box.replaceChildren(el("span", null, `✓ Güncel · ${hhmm(health.checkedAt)} kontrol edildi`)); return; }
+    if (s === "checking") { box.replaceChildren(el("span", null, "⏳ Sunucuyla kontrol ediliyor…")); return; }
+    const msg = s === "stale"
+      ? "⚠️ Bu telefon güncel kayıtları alamıyor. Eşinin son girdiği kayıtlar burada GÖRÜNMEYEBİLİR."
+      : "⚠️ Sunucuya ulaşılamıyor. Gösterilen bilgiler eski olabilir.";
+    const last = health.checkedAt ? ` Son başarılı kontrol: ${hhmm(health.checkedAt)}.` : "";
+    const acts = el("div", "bb-health-acts");
+    acts.append(btn("btn-secondary", "↻ Tekrar dene", () => { health = { ...health, state: "checking" }; paintHealth(); lastAutoFixAt = 0; checkFreshness(); }),
+      btn("btn-primary", "🔧 Onar", () => ctx.repair?.()));
+    box.replaceChildren(el("div", "bb-health-msg", msg + last), acts, btn("link-btn bb-health-diag", "Tanı ekranı", () => ctx.diagnose?.()));
+  }
+  function paintHealth() {
+    const box = document.getElementById("bb-health");
+    if (box && root.dataset.mode === "main") fillHealth(box);
   }
 
   // Türe göre en son kayıt. Canlıda bileşik dizin gerekir: events (type ↑, at ↓) — firestore.indexes.json
@@ -293,6 +370,7 @@ export function createBabyTracker(ctx) {
       render();
     }, (e) => dbg("takviyeler HATA: " + (e.code || e.message)));
     subscribeDay();
+    setTimeout(() => checkFreshness(), 5000); // açılışta: dinleyiciler gelsin, sonra sunucuyla karşılaştır
   }
 
   function subscribeDay() {
@@ -320,6 +398,8 @@ export function createBabyTracker(ctx) {
     if (membersUnsub) { membersUnsub(); membersUnsub = null; }
     stopEvents();
     clearInterval(ticker); ticker = null;
+    clearInterval(healthTimer); healthTimer = null;
+    health = { state: "checking", checkedAt: 0, err: "" };
     sid = null; bid = null; baby = null; members.clear();
   }
 
@@ -360,7 +440,7 @@ export function createBabyTracker(ctx) {
     if (!baby) return;
     root.dataset.mode = "main";
     const frag = document.createDocumentFragment();
-    frag.append(summaryCard());
+    frag.append(healthBar(), summaryCard());
     if (baby.activeTimer) frag.append(timerCard());
     if (baby.sleepTimer) frag.append(sleepCard());
     frag.append(actionsRow());
@@ -1326,5 +1406,13 @@ export function createBabyTracker(ctx) {
 
   function title() { return baby ? `👶 ${baby.name}` : "👶 Bebek"; }
 
-  return { start, stop, resync, title, openSettings };
+  // Tanı ekranı için kısa durum
+  function healthInfo() {
+    if (!sid || !bid) return null;
+    const t = health.checkedAt ? ` (${hhmm(health.checkedAt)})` : "";
+    const map = { ok: "güncel" + t, checking: "kontrol ediliyor", stale: "ESKİ — son kayıtlar gelmiyor" + t, offline: "sunucuya ulaşılamıyor: " + health.err };
+    return { text: map[health.state] || health.state, ok: health.state === "ok" ? true : health.state === "checking" ? undefined : false };
+  }
+
+  return { start, stop, resync, title, openSettings, health: healthInfo };
 }

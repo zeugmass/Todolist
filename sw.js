@@ -1,6 +1,6 @@
 // Görevler PWA - service worker
 // Kod güncellenince sürümü artır: v2 -> v3 ...
-const CACHE = "gorevler-v14";
+const CACHE = "gorevler-v15";
 
 const APP_SHELL = [
   "./", "./index.html", "./styles.css", "./app.js", "./baby.js", "./firebase-config.js",

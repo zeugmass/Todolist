@@ -376,6 +376,24 @@ input:focus { border-color: var(--accent); }
 .bb-days { display: flex; align-items: center; gap: 8px; }
 #modal-body .bb-days input { width: 90px; margin: 0; }
 .bb-ended { opacity: .55; }
+/* Bebek ekranı tazelik çubuğu: sorun yokken küçük gri satır, sorun varsa göze batan uyarı */
+.bb-health { font-size: 12.5px; color: var(--muted); text-align: center; margin: -4px 0 -4px; }
+.bb-health.bad {
+  text-align: left; font-size: 15px; color: var(--text); margin: 0;
+  border: 2px solid var(--danger); border-radius: 14px; padding: 12px 14px; background: var(--surface-2);
+}
+.bb-health-msg { font-weight: 600; line-height: 1.35; }
+.bb-health-acts { display: flex; gap: 8px; margin-top: 10px; }
+.bb-health-acts button { flex: 1; padding: 10px 6px; font-size: 15px; }
+/* Tanı ekranı */
+.diag { list-style: none; margin: 0 0 12px; padding: 0; font-size: 14px; }
+.diag li { display: flex; justify-content: space-between; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--border); }
+.diag li b { text-align: right; font-weight: 600; word-break: break-word; }
+.diag li.good b { color: var(--text); }
+.diag li.good b::before { content: "✓ "; }
+.diag li.bad b { color: var(--danger); }
+.diag-log { font-size: 11px; line-height: 1.4; white-space: pre-wrap; word-break: break-word; max-height: 160px; overflow: auto;
+  background: var(--surface-2); border-radius: 10px; padding: 8px; margin: 4px 0 0; color: var(--muted); }
 .bb-date { width: 58px; font-size: 14px; }
 .bb-add { margin: 12px 0 4px; }
 /* Grafikler (tek seri; renkler tema değişkenlerinden → açık/koyu tema otomatik) */

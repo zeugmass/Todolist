@@ -7,10 +7,10 @@ import {
   initializeFirestore, persistentLocalCache, persistentSingleTabManager,
   collection, doc, addDoc, setDoc, updateDoc, deleteDoc, getDoc, getDocs,
   onSnapshot, query, orderBy, serverTimestamp, writeBatch, increment, deleteField, arrayUnion, Timestamp,
-  connectFirestoreEmulator, disableNetwork, enableNetwork, getDocFromServer
+  connectFirestoreEmulator, disableNetwork, enableNetwork, getDocFromServer, terminate, clearIndexedDbPersistence
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { getMessaging, getToken, onMessage, isSupported } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging.js";
-import { initializeAppCheck, ReCaptchaEnterpriseProvider } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app-check.js";
+import { initializeAppCheck, ReCaptchaEnterpriseProvider, getToken as getAppCheckToken } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app-check.js";
 import { firebaseConfig } from "./firebase-config.js";
 import { createBabyTracker } from "./baby.js";
 
@@ -18,7 +18,7 @@ import { createBabyTracker } from "./baby.js";
 const VAPID_KEY = "BGqR76axu5G6VDL1SxXPF4MMDfkF1vzHgGBe8rvr9n01Q0Gl-t3w4jXEtlqDn4wNGI22K1LKHOyvyKPl9mH5-ls";
 
 // Sürüm — her güncellemede artır (menüde altta gösterilir; güncelleme takibi için).
-const APP_VERSION = "14 · 2026-10-16";
+const APP_VERSION = "15 · 2026-10-27";
 
 // Cihazın saat dilimi (IANA, örn. "Europe/Paris"). Görevlere yazılır ki sunucu tekrar
 // hesabını doğru yere göre yapsın (kullanıcı hangi ülkedeyse ona göre).
@@ -30,8 +30,9 @@ const app = initializeApp(firebaseConfig);
 // Diğer servislerden ÖNCE başlatılmalı. Sunucuda şimdilik izleme modunda; zorunlu yapılınca
 // sahte istemcilerin istekleri reddedilir. Site anahtarı herkese açıktır, gizli değildir.
 const APPCHECK_SITE_KEY = "6LceYdItAAAAAIC5r5rEiQUP7lfiIlIazEGLfyXB";
+let appCheck = null; // tanı ekranı jeton alınabiliyor mu diye bakar
 try {
-  initializeAppCheck(app, { provider: new ReCaptchaEnterpriseProvider(APPCHECK_SITE_KEY), isTokenAutoRefreshEnabled: true });
+  appCheck = initializeAppCheck(app, { provider: new ReCaptchaEnterpriseProvider(APPCHECK_SITE_KEY), isTokenAutoRefreshEnabled: true });
 } catch (e) { console.warn("App Check başlatılamadı:", e); }
 // initializeAuth (getAuth DEĞİL): "Google ile giriş" pencere altyapısını (apis.google.com betiği +
 // gizli iframe) HİÇ yüklemez — yalnız e-posta/şifre kullanıyoruz, dış betik az = saldırı yüzeyi az.
@@ -59,9 +60,29 @@ const hide = (el) => el.classList.add("hidden");
 const DEBUG = new URLSearchParams(location.search).has("debug");
 const t0 = performance.now();
 let dbgEl = null;
+// Tanı günlüğü: hatalar telefonda (localStorage) son 30 satır saklanır → "Sürüm" yazısına dokununca
+// açılan tanı ekranında görünür. Yalnız hata metni; e-posta/ad gibi kişisel veri yazılmaz.
+const diagLog = (() => { try { return JSON.parse(localStorage.getItem("diagLog") || "[]"); } catch { return []; } })();
+function noteDiag(line) {
+  const when = new Date().toLocaleString("tr-TR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  diagLog.push(`${when} ${String(line).slice(0, 240)}`);
+  while (diagLog.length > 30) diagLog.shift();
+  try { localStorage.setItem("diagLog", JSON.stringify(diagLog)); } catch {}
+}
+const consoleError = console.error.bind(console);
+console.error = (...a) => {
+  try {
+    const s = a.map((x) => (x instanceof Error ? `${x.name}: ${x.message}` : typeof x === "string" ? x : String(x))).join(" ");
+    if (/firestore|firebase|app-?check|indexeddb/i.test(s)) noteDiag("konsol: " + s);
+  } catch {}
+  consoleError(...a);
+};
+window.addEventListener("error", (e) => noteDiag("hata: " + (e.message || "?")));
+window.addEventListener("unhandledrejection", (e) => noteDiag("yakalanmayan: " + (e.reason?.code || e.reason?.message || e.reason)));
 function dbg(msg) {
   const line = `[+${((performance.now() - t0) / 1000).toFixed(2)}s] ${msg}`;
   try { console.log(line); } catch {}
+  if (/HATA|ENGEL|ESKİ VERİ|onar/i.test(msg)) noteDiag(msg);
   if (!DEBUG) return;
   if (!dbgEl) {
     dbgEl = document.createElement("div");
@@ -211,7 +232,8 @@ let undoTimer = null;
 let viewMode = "lists"; // "lists" | "baby"
 const baby = createBabyTracker({
   db, getUser: () => currentUser, $, toast, showSnackbar, openModal, closeModal, modalError, dbg,
-  personColor, TZ, onTitleChange: () => renderHeader()
+  personColor, TZ, onTitleChange: () => renderHeader(),
+  refresh: () => hardRefresh({ resubscribe: true }), repair: () => repairApp(), diagnose: () => openDiagnostics()
 });
 function sharedSpaceId() { for (const [id, p] of userSpaces) if (p.shared) return id; return null; }
 function applyViewMode() {
@@ -545,15 +567,15 @@ function scheduleResync(reason) {
 // açıyoruz (uygulamayı kapatıp açmanın etkisi), sonra sunucuya küçük bir okuma ile ulaşabildiğimizi doğruluyoruz.
 const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("zaman aşımı")), ms))]);
 let refreshing = null;
-function hardRefresh({ manual = false } = {}) {
+function hardRefresh({ manual = false, resubscribe = manual } = {}) {
   if (refreshing) return refreshing; // üst üste basılırsa aynı işlemi bekle
   refreshing = (async () => {
-    dbg(manual ? "elle yenile (bağlantı yeniden kuruluyor)" : "otomatik yenile (öne gelindi/çevrimiçi)");
+    dbg(manual ? "elle yenile (bağlantı yeniden kuruluyor)" : "otomatik yenile (öne gelindi/çevrimiçi/eski veri)");
     try {
       await withTimeout(disableNetwork(db), 5000);
       await withTimeout(enableNetwork(db), 5000);
     } catch (e) { dbg("bağlantı yeniden kurma HATA: " + (e.code || e.message)); }
-    if (manual) {
+    if (resubscribe) {
       // Elle yenilemede dinleyicileri de baştan kur (otomatik yenilemede gerek yok; ekran titremesin)
       if (viewMode === "baby") baby.resync();
       if (spaceId) { resyncAttempts = 0; establishSpaceListeners(); subscribeTodos(activeListId); }
@@ -577,6 +599,74 @@ document.addEventListener("visibilitychange", () => {
   hiddenAt = 0;
 });
 window.addEventListener("online", () => { if (currentUser) hardRefresh(); });
+
+// ONAR: telefondaki Firestore önbelleğini (IndexedDB) ve uygulama dosyası önbelleğini siler, sayfayı
+// yeniden yükler. Bozulmuş/eski önbellek yüzünden telefon güncel veriyi hiç göstermiyorsa çare budur
+// (uygulamayı silip yeniden eklemenin etkisi). Oturum (giriş) korunur; sunucudaki veriye dokunulmaz.
+function repairApp() {
+  openModal({
+    title: "🔧 Bağlantıyı onar", autofocus: false, okText: "Onar", okDanger: true,
+    bodyHTML: '<p class="hint">Bu telefondaki geçici veriler silinir ve uygulama yeniden açılır. <b>Hesabından çıkmazsın</b>, tüm kayıtlar sunucuda durur ve yeniden yüklenir.</p><p class="hint">Not: İnternet yokken girip henüz gönderilemeyen bir kayıt varsa o kaybolabilir.</p>',
+    onOk: () => { doRepair(); }
+  });
+}
+async function doRepair() {
+  dbg("onarım başladı");
+  toast("Onarılıyor…");
+  try { await withTimeout(terminate(db), 5000); } catch (e) { dbg("onarım: kapatma HATA " + (e.code || e.message)); }
+  try { await withTimeout(clearIndexedDbPersistence(db), 8000); }
+  catch (e) {
+    dbg("onarım: önbellek silme HATA " + (e.code || e.message) + " → doğrudan siliniyor");
+    try { indexedDB.deleteDatabase(`firestore/[DEFAULT]/${firebaseConfig.projectId}/main`); } catch {}
+  }
+  try { const ks = await caches.keys(); await Promise.all(ks.map((k) => caches.delete(k))); } catch {}
+  localStorage.setItem("repairedAt", String(Date.now()));
+  location.reload();
+}
+
+{ // menünün altındaki sürüm yazısı = tanı ekranı düğmesi (bir kez bağlanır)
+  const av = $("app-version");
+  av.setAttribute("role", "button"); av.style.cursor = "pointer";
+  av.addEventListener("click", () => { closeDrawer(); openDiagnostics(); });
+}
+// TANI EKRANI ("Sürüm" yazısına dokun): bağlantıyı adım adım dener, sonuçları ve son hataları gösterir.
+// Sorun olduğunda ekran görüntüsü alınıp gönderilebilir (kişisel veri içermez).
+async function openDiagnostics() {
+  openModal({ title: "🔧 Bağlantı tanısı", autofocus: false, okText: "Kapat", showCancel: false,
+    bodyHTML: '<ul class="diag" id="diag-list"></ul><button type="button" id="diag-repair" class="btn-secondary">🔧 Bağlantıyı onar</button><div class="field-label">Son hatalar</div><pre class="diag-log" id="diag-log"></pre>' });
+  const ul = $("diag-list");
+  const row = (label, val, ok) => { const li = document.createElement("li"); li.className = ok === false ? "bad" : ok ? "good" : "";
+    const a = document.createElement("span"); a.textContent = label; const b = document.createElement("b"); b.textContent = val; li.append(a, b); ul.append(li); return b; };
+  $("diag-repair").addEventListener("click", () => { closeModal(); repairApp(); });
+  $("diag-log").textContent = diagLog.length ? diagLog.slice(-12).join("\n") : "(kayıtlı hata yok)";
+  row("Sürüm", APP_VERSION);
+  row("Saat dilimi", TZ || "?");
+  row("Telefon internete bağlı mı", navigator.onLine ? "evet" : "HAYIR", navigator.onLine);
+  const ra = +localStorage.getItem("repairedAt") || 0;
+  if (ra) row("Son onarım", new Date(ra).toLocaleString("tr-TR"));
+  const bh = baby.health();
+  if (bh) row("Bebek verisi", bh.text, bh.ok);
+  const clock = row("Telefon saati", "kontrol ediliyor…");
+  const ac = row("Güvenlik jetonu (App Check)", "kontrol ediliyor…");
+  const srv = row("Sunucudan okuma", "kontrol ediliyor…");
+  // Saat farkı: App Check jetonları saat çok yanlışsa reddedilebilir
+  try {
+    const r = await withTimeout(fetch(location.pathname + "?t=" + Date.now(), { method: "HEAD", cache: "no-store" }), 8000);
+    const d = Date.parse(r.headers.get("date") || "");
+    if (d) { const diff = Math.round((Date.now() - d) / 1000); clock.textContent = Math.abs(diff) < 120 ? "doğru" : `${diff > 0 ? "+" : ""}${diff} sn fark!`; clock.parentElement.className = Math.abs(diff) < 120 ? "good" : "bad"; }
+    else clock.textContent = "bilinmiyor";
+  } catch { clock.textContent = "bilinmiyor"; }
+  try {
+    if (!appCheck) throw new Error("başlatılamadı");
+    const t1 = performance.now(); await withTimeout(getAppCheckToken(appCheck, false), 10000);
+    ac.textContent = `alındı (${Math.round(performance.now() - t1)} ms)`; ac.parentElement.className = "good";
+  } catch (e) { ac.textContent = "ALINAMADI: " + (e.code || e.message); ac.parentElement.className = "bad"; noteDiag("tanı: App Check " + (e.code || e.message)); }
+  try {
+    if (!currentUser) throw new Error("giriş yok");
+    const t1 = performance.now(); await withTimeout(getDocFromServer(doc(db, "users", currentUser.uid)), 10000);
+    srv.textContent = `başarılı (${Math.round(performance.now() - t1)} ms)`; srv.parentElement.className = "good";
+  } catch (e) { srv.textContent = "BAŞARISIZ: " + (e.code || e.message); srv.parentElement.className = "bad"; noteDiag("tanı: sunucu " + (e.code || e.message)); }
+}
 
 function setActiveList(listId) {
   const changed = activeListId !== listId;
@@ -1210,7 +1300,7 @@ const isStandalone = () => window.matchMedia("(display-mode: standalone)").match
 let fcmForegroundBound = false; // onMessage yalnız bir kez bağlansın
 
 function updateNotifButton() {
-  const av = $("app-version"); if (av) av.textContent = "Sürüm " + APP_VERSION;
+  const av = $("app-version"); if (av) av.textContent = "Sürüm " + APP_VERSION + " · 🔧 tanı";
   const b = $("btn-notif");
   if (!b) return;
   const granted = ("Notification" in window) && Notification.permission === "granted";
